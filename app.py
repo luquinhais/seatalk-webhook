@@ -1,135 +1,59 @@
-from flask import Flask, request, jsonify
-import hashlib, os, json, time, requests
-from collections import deque
+import os, requests, time
 
-app = Flask(__name__)
+AUTH_URL = "https://openapi.seatalk.io/auth/app_access_token"
+APP_ID   = os.getenv("SEATALK_APP_ID")
+APP_SEC  = os.getenv("SEATALK_APP_SECRET")
+SEND_URL = os.getenv("SEATALK_GROUP_SEND_URL")  # endpoint de envio p/ grupo (da doc)
+GROUP_ID = os.getenv("SEATALK_GROUP_ID")
 
-# --- Vars de ambiente ---
-SIGNING_SECRET = os.getenv("SEATALK_SIGNING_SECRET", "")
-GROUP_WEBHOOK_URL = os.getenv("SEATALK_GROUP_WEBHOOK_URL", "")  # webhook de grupo (System Account)
+_token = {"v": None, "exp": 0}
 
-# --- Dedupe simples de eventos (evita duplicados) ---
-_recent_event_ids = deque(maxlen=512)
-def _already_processed(event_id: str) -> bool:
-    if not event_id:
-        return False
-    if event_id in _recent_event_ids:
-        return True
-    _recent_event_ids.append(event_id)
-    return False
+def get_token():
+    now = int(time.time())
+    if _token["v"] and now < _token["exp"] - 60:
+        return _token["v"]
+    r = requests.post(AUTH_URL, json={"app_id": APP_ID, "app_secret": APP_SEC}, timeout=5)
+    data = r.json()
+    token = data.get("access_token") or data.get("app_access_token")
+    exp   = now + int(data.get("expires_in") or data.get("expire") or 7200)
+    if not token:
+        raise RuntimeError(f"Falha ao obter token: {data}")
+    _token.update({"v": token, "exp": exp})
+    return token
 
-# --- Helpers ---
-def _send_group_text(content: str):
-    """Envia uma mensagem de texto simples via webhook de grupo."""
-    if not GROUP_WEBHOOK_URL:
-        print("⚠️ SEATALK_GROUP_WEBHOOK_URL não configurada; pulando envio.")
-        return None
+def send_group_text(text: str):
+    token = get_token()
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     payload = {
-        "tag": "text",
-        "text": { "content": content }
+        "group_id": GROUP_ID,
+        "message": {"tag": "text", "text": {"content": text}}
     }
-    r = requests.post(
-        GROUP_WEBHOOK_URL,
-        json=payload,
-        headers={"Content-Type": "application/json; charset=utf-8"},
-        timeout=5
-    )
-    try:
-        j = r.json()
-    except Exception:
-        j = {"raw": r.text}
-    print("↪️ webhook(text) resp:", r.status_code, j)
-    return r.status_code, j
+    r = requests.post(SEND_URL, headers=headers, json=payload, timeout=5)
+    print("send_group_text:", r.status_code, r.text)
+    r.raise_for_status()
+    return r.json()
 
-def _send_group_ack_interactive(protocolo: str = "-"):
-    """Envia um card interativo simples de agradecimento (sem botão) via webhook."""
-    if not GROUP_WEBHOOK_URL:
-        print("⚠️ SEATALK_GROUP_WEBHOOK_URL não configurada; pulando envio.")
-        return None
+def send_group_interactive():
+    token = get_token()
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     payload = {
-        "tag": "interactive_message",
-        "interactive_message": {
-            "elements": [
-                {
-                    "element_type": "description",
-                    "description": { "text": f"Obrigado por responder ✅ (Protocolo: {protocolo})" }
-                }
-            ]
+        "group_id": GROUP_ID,
+        "message": {
+            "tag": "interactive_message",
+            "interactive_message": {
+                "elements": [
+                    {"element_type": "title", "title": {"text": "Teste callback (API)"}},
+                    {"element_type": "description", "description": {"text": "Clique para confirmar."}},
+                    {"element_type": "button", "button": {
+                        "button_type": "callback",
+                        "text": "Confirmar",
+                        "value": "{\"action\":\"ack\",\"protocolo\":\"TESTE123\"}"
+                    }}
+                ]
+            }
         }
     }
-    r = requests.post(
-        GROUP_WEBHOOK_URL,
-        json=payload,
-        headers={"Content-Type": "application/json; charset=utf-8"},
-        timeout=5
-    )
-    try:
-        j = r.json()
-    except Exception:
-        j = {"raw": r.text}
-    print("↪️ webhook(interactive) resp:", r.status_code, j)
-    return r.status_code, j
-
-def _extract_protocolo(evt: dict) -> str:
-    """Extrai 'protocolo' de evt.value (string JSON ou dict)."""
-    try:
-        value = evt.get("value")
-        if isinstance(value, str):
-            try:
-                value = json.loads(value)
-            except Exception:
-                return "-"
-        if isinstance(value, dict):
-            return str(value.get("protocolo", "-"))
-        return "-"
-    except Exception:
-        return "-"
-
-@app.get("/")
-def health():
-    return "ok", 200
-
-@app.post("/")
-def callback():
-    # corpo cru (bytes) e JSON (dict)
-    body = request.get_data()
-    data = request.get_json(force=True)
-
-    # 1) Verificação do callback URL → responder JSON com seatalk_challenge
-    if data.get("event_type") == "event_verification":
-        challenge = data.get("event", {}).get("seatalk_challenge")
-        return jsonify({"seatalk_challenge": challenge}), 200
-
-    # 2) Validação de assinatura para demais eventos (sha256(<body> + signing_secret))
-    signature = request.headers.get("Signature") or request.headers.get("signature") or ""
-    expected = hashlib.sha256(body + SIGNING_SECRET.encode()).hexdigest()
-    if expected != signature:
-        return "unauthorized", 403
-
-    # 3) Dedupe
-    event_id = data.get("event_id")
-    if _already_processed(event_id):
-        print("ℹ️ Evento duplicado ignorado:", event_id)
-        return "ok", 200
-
-    etype = data.get("event_type")
-    evt   = data.get("event", {}) or {}
-    print("✅ Evento recebido:", data)
-
-    # 4) Fallback: ao clicar no botão, enviar "Obrigado por responder" via webhook de grupo
-    if etype == "interactive_message_click":
-        protocolo = _extract_protocolo(evt)
-        # Você pode escolher entre texto simples OU card interativo sem botão:
-        # a) texto simples:
-        _send_group_text(f"Obrigado por responder ✅ (Protocolo: {protocolo})")
-        # b) ou card interativo sem botão:
-        # _send_group_ack_interactive(protocolo)
-
-    # 5) Responder rápido
-    return "ok", 200
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", "10000"))
-    app.run(host="0.0.0.0", port=port)
-
-
+    r = requests.post(SEND_URL, headers=headers, json=payload, timeout=5)
+    print("send_group_interactive:", r.status_code, r.text)
+    r.raise_for_status()
+    return r.json()
