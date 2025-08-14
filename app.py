@@ -6,7 +6,7 @@ app = Flask(__name__)
 
 # --- Vars de ambiente ---
 SIGNING_SECRET = os.getenv("SEATALK_SIGNING_SECRET", "")
-GROUP_WEBHOOK_URL = os.getenv("SEATALK_GROUP_WEBHOOK_URL", "")  # webhook de grupo (System Account)
+GROUP_WEBHOOK_URL = os.getenv("https://openapi.seatalk.io/webhook/group/ipsr0POAToWvnfO5NrPArQ", "")  # webhook de grupo (System Account)
 
 # --- Dedupe simples de eventos (evita duplicados) ---
 _recent_event_ids = deque(maxlen=512)
@@ -131,3 +131,4 @@ def callback():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "10000"))
     app.run(host="0.0.0.0", port=port)
+
