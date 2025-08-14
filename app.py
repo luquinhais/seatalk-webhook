@@ -1,4 +1,4 @@
-import os, requests, time
+import os, requests, time, hashlib, json
 
 AUTH_URL = "https://openapi.seatalk.io/auth/app_access_token"
 APP_ID   = os.getenv("SEATALK_APP_ID")
@@ -57,3 +57,4 @@ def send_group_interactive():
     print("send_group_interactive:", r.status_code, r.text)
     r.raise_for_status()
     return r.json()
+
