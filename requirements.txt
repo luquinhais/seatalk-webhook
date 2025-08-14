@@ -1,3 +1,5 @@
-Flask
-gunicorn
-requests
+Flask==3.0.3
+gunicorn==22.0.0
+requests==2.32.3
+gspread==6.1.4
+google-auth==2.33.0
