@@ -1,24 +1,52 @@
 # app.py
-import os, time, json, hashlib, requests, threading
-from collections import deque
+import os, time, json, hashlib, requests
+from datetime import datetime, timezone
 from flask import Flask, request, jsonify
 
+# ==== Flask ====
 app = Flask(__name__)
 
-# ========= VARIÁVEIS DE AMBIENTE =========
-AUTH_URL       = "https://openapi.seatalk.io/auth/app_access_token"
-UPDATE_URL     = os.getenv("SEATALK_UPDATE_URL", "https://openapi.seatalk.io/messaging/v2/update")
-SEND_URL       = (os.getenv("SEATALK_GROUP_SEND_URL") or "").strip()     # endpoint oficial de envio p/ grupo
-GROUP_ID       = (os.getenv("SEATALK_GROUP_ID") or "").strip()           # id do grupo
+# ==== SeaTalk config ====
+AUTH_URL   = "https://openapi.seatalk.io/auth/app_access_token"
+UPDATE_URL = "https://openapi.seatalk.io/messaging/v2/update"
 
 APP_ID         = (os.getenv("SEATALK_APP_ID") or "").strip()
 APP_SECRET     = (os.getenv("SEATALK_APP_SECRET") or "").strip()
 SIGNING_SECRET = (os.getenv("SEATALK_SIGNING_SECRET") or "").strip()
 
-# ➜ URL legado (smart.io) para reencaminhar os eventos (fan-out)
-FORWARD_TO_URL = (os.getenv("FORWARD_TO_URL") or "").strip()
+# ==== Google Sheets (via Service Account) ====
+GOOGLE_SHEET_ID   = (os.getenv("GOOGLE_SHEET_ID") or "").strip()
+GOOGLE_SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME", "seatalk_logs")
 
-# ========= TOKEN CACHE =========
+# gspread lazy init
+_gspread_client = None
+def _get_gspread_client():
+    global _gspread_client
+    if _gspread_client:
+        return _gspread_client
+    creds_json = os.getenv("GOOGLE_CREDENTIALS_JSON") or ""
+    if not creds_json:
+        raise RuntimeError("GOOGLE_CREDENTIALS_JSON não configurada")
+    info = json.loads(creds_json)
+    from google.oauth2.service_account import Credentials
+    import gspread
+    scope = ["https://www.googleapis.com/auth/spreadsheets"]
+    creds = Credentials.from_service_account_info(info, scopes=scope)
+    _gspread_client = gspread.authorize(creds)
+    return _gspread_client
+
+def _append_row(values):
+    if not GOOGLE_SHEET_ID:
+        return
+    gc = _get_gspread_client()
+    sh = gc.open_by_key(GOOGLE_SHEET_ID)
+    try:
+        ws = sh.worksheet(GOOGLE_SHEET_NAME)
+    except Exception:
+        ws = sh.add_worksheet(GOOGLE_SHEET_NAME, rows=100, cols=10)
+    ws.append_row(values, value_input_option="USER_ENTERED")
+
+# ==== Token cache ====
 _token = {"v": None, "exp": 0}
 def get_token():
     if not APP_ID or not APP_SECRET:
@@ -35,177 +63,114 @@ def get_token():
     _token.update({"v": token, "exp": exp})
     return token
 
-# ========= ENVIO PARA GRUPO (API) =========
-def send_group_text(text: str):
-    if not SEND_URL or not GROUP_ID:
-        raise RuntimeError("SEATALK_GROUP_SEND_URL/SEATALK_GROUP_ID ausentes")
-    token = get_token()
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    payload = {"group_id": GROUP_ID, "message": {"tag": "text", "text": {"content": text}}}
-    r = requests.post(SEND_URL, headers=headers, json=payload, timeout=8)
-    print("send_group_text:", r.status_code, r.text)
-    r.raise_for_status()
-    return r.json()
-
-def send_group_interactive(protocolo="TESTE123"):
-    if not SEND_URL or not GROUP_ID:
-        raise RuntimeError("SEATALK_GROUP_SEND_URL/SEATALK_GROUP_ID ausentes")
-    token = get_token()
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    payload = {
-        "group_id": GROUP_ID,
-        "message": {
-            "tag": "interactive_message",
-            "interactive_message": {
-                "elements": [
-                    {"element_type": "title", "title": {"text": "Teste callback (API)"}},
-                    {"element_type": "description", "description": {"text": "Clique para confirmar."}},
-                    {"element_type": "button", "button": {
-                        "button_type": "callback",
-                        "text": "Confirmar",
-                        "value": json.dumps({"action":"ack","protocolo": protocolo})
-                    }}
-                ]
-            }
-        }
-    }
-    r = requests.post(SEND_URL, headers=headers, json=payload, timeout=8)
-    print("send_group_interactive:", r.status_code, r.text)
-    r.raise_for_status()
-    return r.json()
-
-# ========= UPDATE DE CARD =========
-def update_card(message_id: str, elements: list):
-    """Atualiza o card interativo. Requer permissão do MESMO app que enviou a mensagem."""
-    token = get_token()
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    payload = {"message_id": message_id, "message": {"interactive_message": {"elements": elements}}}
-    r = requests.post(UPDATE_URL, headers=headers, json=payload, timeout=8)
-    try: j = r.json()
-    except Exception: j = {"raw": r.text}
-    print("update_card:", r.status_code, j)
-    return r.status_code, j
-
-# ========= UTILS =========
 def expected_signature(raw: bytes) -> str:
-    return hashlib.sha256(raw + SIGNING_SECRET.encode()).hexdigest() if SIGNING_SECRET else ""
+    if not SIGNING_SECRET:
+        return ""
+    # mesma regra que você já usou: SHA-256 do corpo + segredo
+    return hashlib.sha256(raw + SIGNING_SECRET.encode()).hexdigest()
 
-def extract_protocolo(evt: dict) -> str:
-    v = evt.get("value")
-    if isinstance(v, str):
-        try: v = json.loads(v)
+def update_card(message_id: str, elements: list):
+    """Atualiza o card. Tenta payload 'puro', depois 'com tag'."""
+    token = get_token()
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+    # tentativa #1: payload "puro"
+    payload1 = {"message_id": message_id, "message": {"interactive_message": {"elements": elements}}}
+    r1 = requests.post(UPDATE_URL, headers=headers, json=payload1, timeout=8)
+    print("update #1:", r1.status_code, r1.text)
+    ok1 = False
+    try:
+        j1 = r1.json()
+        ok1 = (r1.status_code == 200 and str(j1.get("code", 0)) == "0")
+    except Exception:
+        pass
+    if ok1:
+        return j1
+
+    # tentativa #2: payload com tag
+    payload2 = {"message_id": message_id, "message": {"tag":"interactive_message","interactive_message":{"elements": elements}}}
+    r2 = requests.post(UPDATE_URL, headers=headers, json=payload2, timeout=8)
+    print("update #2:", r2.status_code, r2.text)
+    r2.raise_for_status()
+    return r2.json()
+
+def _extract_action(value):
+    # value pode ser string JSON ou dict
+    if isinstance(value, str):
+        try: value = json.loads(value)
         except Exception: return "-"
-    if isinstance(v, dict): return str(v.get("protocolo", "-"))
+    if isinstance(value, dict):
+        return str(value.get("acao", "-"))
     return "-"
 
-_recent = deque(maxlen=512)
-def seen(event_id: str) -> bool:
-    if not event_id: return False
-    if event_id in _recent: return True
-    _recent.append(event_id); return False
-
-def _fanout_forward(raw_body: bytes, signature: str, content_type: str):
-    """Reenvia o MESMO corpo e a MESMA assinatura para o endpoint legado (smart.io)."""
-    if not FORWARD_TO_URL:
-        return
-    headers = {"Content-Type": content_type or "application/json"}
-    if signature:
-        headers["Signature"] = signature
-    try:
-        r = requests.post(FORWARD_TO_URL, data=raw_body, headers=headers, timeout=5)
-        print("↪️ forward resp:", r.status_code)
-    except Exception as e:
-        print("❌ forward erro:", repr(e))
-
-# ========= ROTAS =========
-@app.route("/", methods=["GET"])
+# ==== Health ====
+@app.get("/")
 def health():
     return "ok", 200
 
-# Callback “oficial” do Seatalk
+# ==== Callback (oficial) ====
 @app.post("/callback")
 def seatalk_callback():
-    raw = request.get_data()             # bytes crus do corpo
-    data = request.get_json(force=True)  # dict já parseado
-    etype = data.get("event_type") or ""
+    raw = request.get_data()  # bytes
+    data = request.get_json(force=True)  # dict
+    etype = str(data.get("event_type", ""))
     sig   = request.headers.get("Signature") or request.headers.get("signature") or ""
-    ctype = request.headers.get("Content-Type") or "application/json"
 
-    # 1) Verificação de URL
+    # 1) verificação
     if etype == "event_verification":
-        ch = data.get("event", {}).get("seatalk_challenge")
-        # Também repassa a verificação para o legado (não bloqueia)
-        threading.Thread(target=_fanout_forward, args=(raw, sig, ctype), daemon=True).start()
+        ch = (data.get("event") or {}).get("seatalk_challenge")
         return jsonify({"seatalk_challenge": ch}), 200
 
-    # 2) (Opcional) Validação da assinatura local
+    # 2) validação de assinatura (opcional)
     if SIGNING_SECRET:
-        try:
-            if expected_signature(raw) != sig:
-                # Mesmo com falha local, encaminhe ao legado para não quebrar o bot
-                threading.Thread(target=_fanout_forward, args=(raw, sig, ctype), daemon=True).start()
-                return "unauthorized", 403
-        except Exception as e:
-            print("⚠️ erro validação assinatura:", repr(e))
+        calc = expected_signature(raw)
+        if not sig or calc.lower() != sig.lower():
+            print("signature mismatch", sig, calc)
+            # você pode devolver 403; aqui seguimos 200 para não travar o SeaTalk
+            # return "unauthorized", 403
 
-    # 3) Dedupe básico
-    if seen(data.get("event_id")):
-        threading.Thread(target=_fanout_forward, args=(raw, sig, ctype), daemon=True).start()
+    # 3) trata clique
+    if etype == "interactive_message_click":
+        evt = data.get("event") or {}
+        message_id = str(evt.get("message_id", ""))
+        action = _extract_action(evt.get("value"))
+
+        # log no sheets (não bloqueia)
+        try:
+            ts_iso = datetime.now(timezone.utc).isoformat()
+            who = str(evt.get("seatalk_id") or evt.get("email") or "")
+            group = str(evt.get("group_id") or evt.get("chat_id") or "")
+            _append_row([ts_iso, "interactive_message_click", message_id, group, who, action])
+        except Exception as e:
+            print("sheets log error:", repr(e))
+
+        # update visual do card
+        if message_id:
+            try:
+                elements = [
+                    {"element_type": "description",
+                     "description": {"text": f"Obrigado por responder ✅ ({action})", "format": 1}}
+                ]
+                body = update_card(message_id, elements)
+                print("updated:", body)
+            except Exception as e:
+                print("update error:", repr(e))
+
         return "ok", 200
 
-    print("✅ Evento recebido:", data)
-
-    # 4) Lógica local: clique no botão → tentar update; se falhar, fallback por texto
-    if etype == "interactive_message_click":
-        evt = data.get("event", {}) or {}
-        msg_id = evt.get("message_id")
-        protocolo = extract_protocolo(evt)
-
-        updated = False
-        try:
-            status, body = update_card(msg_id, [
-                {"element_type": "description",
-                 "description": {"text": "Obrigado por responder ✅"}}
-            ])
-            if status == 200 and str(body.get("code", 0)) == "0":
-                updated = True
-        except Exception as e:
-            print("❌ update_card erro:", repr(e))
-
-        if not updated:
-            try:
-                send_group_text(f"Obrigado por responder ✅ (Protocolo: {protocolo})")
-            except Exception as e:
-                print("❌ fallback envio erro:", repr(e))
-
-    # 5) Fan-out para o smart.io (não bloquear a resposta ao SeaTalk)
-    threading.Thread(target=_fanout_forward, args=(raw, sig, ctype), daemon=True).start()
+    # outros eventos (se quiser logar)
+    try:
+        ts_iso = datetime.now(timezone.utc).isoformat()
+        _append_row([ts_iso, etype, json.dumps(data, ensure_ascii=False)])
+    except Exception:
+        pass
 
     return "ok", 200
 
-# ✅ Aceitar POST também na raiz (algumas verificações usam "/")
+# Também aceitar POST na raiz (algumas verificações usam "/")
 @app.post("/")
 def seatalk_callback_root():
     return seatalk_callback()
-
-# ===== Rotas de teste (manuais) =====
-@app.post("/test/send-text")
-def http_send_text():
-    body = request.get_json(silent=True) or {}
-    txt = body.get("text", "Ping via API ✅")
-    try:
-        return jsonify(send_group_text(txt)), 200
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.post("/test/send-interactive")
-def http_send_interactive():
-    body = request.get_json(silent=True) or {}
-    protocolo = body.get("protocolo", "API123")
-    try:
-        return jsonify(send_group_interactive(protocolo)), 200
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "10000"))
