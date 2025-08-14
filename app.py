@@ -3,6 +3,9 @@ import os, time, json, hashlib, requests
 from datetime import datetime, timezone
 from flask import Flask, request, jsonify
 
+UI_ADMIN_TOKEN = os.getenv("UI_ADMIN_TOKEN", "").strip()
+
+
 app = Flask(__name__)
 
 # ========= SeaTalk =========
@@ -18,6 +21,193 @@ SEATALK_SIGNING_SECRET = (os.getenv("SEATALK_SIGNING_SECRET") or "").strip()
 # ========= Google Sheets (Service Account) =========
 GOOGLE_SHEET_ID   = (os.getenv("GOOGLE_SHEET_ID") or "").strip()
 GOOGLE_SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME", "seatalk_logs")
+
+##UI Simples
+
+@app.get("/ui")
+def ui_send():
+    # HTML minimalista com JS que chama /api/send-interactive
+    html = f"""
+<!doctype html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Enviar Card SeaTalk</title>
+  <style>
+    body {{ font-family: system-ui, Arial, sans-serif; max-width: 820px; margin: 40px auto; padding: 0 16px; }}
+    h1 {{ margin-bottom: 8px; }}
+    fieldset {{ border: 1px solid #ddd; padding: 16px; border-radius: 12px; margin-bottom: 16px; }}
+    label {{ display:block; font-size:14px; margin:10px 0 4px; }}
+    input[type=text], input[type=email], textarea {{ width:100%; padding:10px; border:1px solid #ccc; border-radius:8px; }}
+    textarea {{ min-height: 80px; }}
+    .row {{ display:grid; grid-template-columns: 1fr 1fr; gap:12px; }}
+    .btn {{ background:#111; color:#fff; border:none; padding:12px 16px; border-radius:10px; cursor:pointer; }}
+    .btn:hover {{ opacity:.9; }}
+    .muted {{ color:#666; font-size:13px; }}
+    .msg {{ white-space: pre-wrap; background:#f7f7f7; padding:10px; border-radius:8px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }}
+  </style>
+</head>
+<body>
+  <h1>Enviar Card SeaTalk</h1>
+  <p class="muted">Preencha e clique em Enviar. Os botões são do tipo <b>callback</b>; o clique chega no seu <code>/callback</code> e atualiza o card.</p>
+
+  <fieldset>
+    <legend>Destino</legend>
+    <label>E-mail do destinatário</label>
+    <input id="email" type="email" placeholder="alguem@empresa.com" required />
+    <label class="muted">Auth opcional (UI_ADMIN_TOKEN)</label>
+    <input id="adm" type="text" placeholder="(se configurado no Render)" />
+  </fieldset>
+
+  <fieldset>
+    <legend>Conteúdo</legend>
+    <label>Título</label>
+    <input id="title" type="text" value="📌 Confirme sua leitura" />
+    <label>Descrição</label>
+    <textarea id="desc">Escolha uma das opções abaixo.</textarea>
+  </fieldset>
+
+  <fieldset>
+    <legend>Botões (até 3)</legend>
+    <div class="row">
+      <div>
+        <label>Botão 1 — Rótulo</label>
+        <input id="b1_text" type="text" value="✅ Sim" />
+      </div>
+      <div>
+        <label>Botão 1 — Ação</label>
+        <input id="b1_action" type="text" value="sim" />
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label>Botão 2 — Rótulo</label>
+        <input id="b2_text" type="text" value="❌ Não" />
+      </div>
+      <div>
+        <label>Botão 2 — Ação</label>
+        <input id="b2_action" type="text" value="nao" />
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label>Botão 3 — Rótulo</label>
+        <input id="b3_text" type="text" value="🤔 Talvez" />
+      </div>
+      <div>
+        <label>Botão 3 — Ação</label>
+        <input id="b3_action" type="text" value="talvez" />
+      </div>
+    </div>
+  </fieldset>
+
+  <button class="btn" onclick="enviar()">Enviar</button>
+
+  <h3>Resposta</h3>
+  <pre id="out" class="msg"></pre>
+
+<script>
+async function enviar() {{
+  const email = document.getElementById('email').value.trim();
+  const title = document.getElementById('title').value.trim();
+  const desc  = document.getElementById('desc').value.trim();
+  const adm   = document.getElementById('adm').value.trim();
+
+  const bts = [];
+  const b1t = document.getElementById('b1_text').value.trim();
+  const b1a = document.getElementById('b1_action').value.trim();
+  const b2t = document.getElementById('b2_text').value.trim();
+  const b2a = document.getElementById('b2_action').value.trim();
+  const b3t = document.getElementById('b3_text').value.trim();
+  const b3a = document.getElementById('b3_action').value.trim();
+
+  if (b1t && b1a) bts.push({{ text:b1t, action:b1a }});
+  if (b2t && b2a) bts.push({{ text:b2t, action:b2a }});
+  if (b3t && b3a) bts.push({{ text:b3t, action:b3a }});
+
+  const payload = {{ email, title, desc, buttons: bts }};
+  const res = await fetch('/api/send-interactive', {{
+    method:'POST',
+    headers: {{
+      'Content-Type':'application/json',
+      {('\'X-Admin\' : ' + JSON.stringify(UI_ADMIN_TOKEN) + ',') if UI_ADMIN_TOKEN else '' }
+      'X-Admin-Token': adm
+    }},
+    body: JSON.stringify(payload)
+  }});
+  const txt = await res.text();
+  document.getElementById('out').textContent = txt;
+}}
+</script>
+</body>
+</html>
+    """
+    return html, 200, {"Content-Type": "text/html; charset=utf-8"}
+
+##API que envia o card a partir do form
+@app.post("/api/send-interactive")
+def api_send_interactive():
+    try:
+        # proteção opcional da UI
+        if UI_ADMIN_TOKEN:
+            provided = request.headers.get("X-Admin-Token", "")
+            if provided != UI_ADMIN_TOKEN:
+                return jsonify({"error":"unauthorized"}), 403
+
+        body = request.get_json(force=True) or {}
+        email   = (body.get("email") or "").strip()
+        title   = (body.get("title") or "📌 Confirme sua leitura").strip()
+        desc    = (body.get("desc")  or "Escolha uma das opções abaixo.").strip()
+        buttons = body.get("buttons") or []
+
+        if not email:
+            return jsonify({"error":"email é obrigatório"}), 400
+
+        # token + employee_code
+        token = get_token()
+        h = {"Authorization": f"Bearer {token}", "Content-Type":"application/json"}
+
+        cj = requests.post(
+            CONTACTS_URL, headers=h, json={"emails":[email]}, timeout=10
+        ).json()
+        if cj.get("code") != 0 or not cj.get("employees"):
+            return jsonify({"error":"falha ao obter employee_code", "raw": cj}), 400
+        emp = next((e for e in cj["employees"] if e.get("employee_status") == 2), None)
+        if not emp:
+            return jsonify({"error":"usuário inativo", "raw": cj}), 400
+        employee_code = emp["employee_code"]
+
+        # monta card
+        elements = [
+            {"element_type":"title", "title":{"text": title}},
+            {"element_type":"description", "description":{"format":1, "text": desc}},
+        ]
+        for b in buttons[:3]:
+            text = str(b.get("text") or "").strip()
+            act  = str(b.get("action") or "").strip()
+            if not text or not act:
+                continue
+            elements.append({
+                "element_type":"button",
+                "button":{
+                    "button_type":"callback",
+                    "text": text,
+                    "value": json.dumps({"acao": act})
+                }
+            })
+
+        card = {"elements": elements}
+        payload = {"employee_code": employee_code,
+                   "message": {"tag":"interactive_message", "interactive_message": card}}
+
+        r = requests.post(SINGLE_DM_URL, headers=h, json=payload, timeout=10)
+        print("send interactive (UI):", r.status_code, r.text)
+        r.raise_for_status()
+        return jsonify(r.json()), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 _gspread_client = None
 def _get_gspread_client():
@@ -233,3 +423,4 @@ def test_send_interactive_3():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "10000"))
     app.run(host="0.0.0.0", port=port)
+
