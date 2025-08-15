@@ -230,7 +230,7 @@ def seatalk_callback():
             try:
                 elements = [
                     {"element_type": "description",
-                     "description": {"text": f"Obrigado por responder ✅ ({action})", "format": 1}}
+                     "description": {"text": f"✅Resposta enviada! ({action})", "format": 1}}
                 ]
                 body = update_card(message_id, elements)
                 print("updated:", body)
@@ -637,3 +637,4 @@ def test_send_interactive_3():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "10000"))
     app.run(host="0.0.0.0", port=port)
+
