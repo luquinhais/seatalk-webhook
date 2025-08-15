@@ -1,5 +1,5 @@
 # app.py
-import os, time, json, hashlib, requests
+import os, time, json, hashlib, requests, re
 from datetime import datetime, timezone
 from flask import Flask, request, jsonify
 
@@ -93,7 +93,11 @@ def _extract_action(value):
         return str(value.get("acao", "-"))
     return "-"
 
+def _is_http_url(u: str) -> bool:
+    return bool(re.match(r"^https?://", (u or "").strip(), flags=re.I))
+
 def build_elements(title: str, desc: str, buttons: list) -> list:
+    """Card com botões callback (para Individual/Grupos)."""
     els = [
         {"element_type": "title", "title": {"text": title}},
         {"element_type": "description", "description": {"format": 1, "text": desc}},
@@ -109,6 +113,28 @@ def build_elements(title: str, desc: str, buttons: list) -> list:
                 "button_type": "callback",
                 "text": text,
                 "value": json.dumps({"acao": action})
+            }
+        })
+    return els
+
+def build_redirect_elements(title: str, desc: str, redirects: list) -> list:
+    """Card com botões redirect (para Grupos). redirects: [{text, url}]"""
+    els = [
+        {"element_type": "title", "title": {"text": title}},
+        {"element_type": "description", "description": {"format": 1, "text": desc}},
+    ]
+    for r in (redirects or [])[:3]:
+        text = str(r.get("text") or "").strip()
+        url  = str(r.get("url") or "").strip()
+        if not text or not _is_http_url(url):
+            continue
+        els.append({
+            "element_type": "button",
+            "button": {
+                "button_type": "redirect",
+                "text": text,
+                "mobile_link":  {"type": "web", "path": url},
+                "desktop_link": {"type": "web", "path": url}
             }
         })
     return els
@@ -198,19 +224,16 @@ def seatalk_callback():
     etype = str(data.get("event_type", ""))
     sig   = request.headers.get("Signature") or request.headers.get("signature") or ""
 
-    # Verificação do endpoint
     if etype == "event_verification":
         ch = (data.get("event") or {}).get("seatalk_challenge")
         return jsonify({"seatalk_challenge": ch}), 200
 
-    # Assinatura (opcional)
     if SEATALK_SIGNING_SECRET:
         calc = expected_signature(raw)
         if not sig or calc.lower() != sig.lower():
             print("signature mismatch", sig, calc)
-            # return "unauthorized", 403  # habilite se quiser bloquear
+            # return "unauthorized", 403
 
-    # Clique em card
     if etype == "interactive_message_click":
         evt        = data.get("event") or {}
         message_id = str(evt.get("message_id", ""))
@@ -218,19 +241,17 @@ def seatalk_callback():
         email_or_id= str(evt.get("email") or evt.get("seatalk_id") or "")
         group_id   = str(evt.get("group_id") or evt.get("chat_id") or "")
 
-        # Log Sheets (não bloqueia)
         try:
             ts_iso = datetime.now(timezone.utc).isoformat()
             _append_click_row(ts_iso, email_or_id, action, message_id, group_id)
         except Exception as e:
             print("sheets log error:", repr(e))
 
-        # Atualiza o card
         if message_id:
             try:
                 elements = [
                     {"element_type": "description",
-                     "description": {"text": f"✅Resposta enviada! ({action})", "format": 1}}
+                     "description": {"text": f"Obrigado por responder ✅ ({action})", "format": 1}}
                 ]
                 body = update_card(message_id, elements)
                 print("updated:", body)
@@ -241,7 +262,6 @@ def seatalk_callback():
 
     return "ok", 200
 
-# Aceita POST em "/" também
 @app.post("/")
 def seatalk_callback_root():
     return seatalk_callback()
@@ -256,7 +276,7 @@ def ui_send():
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Enviar SeaTalk</title>
+  <title>Seatalk Announcement</title>
   <style>
     body {{ font-family: system-ui, Arial, sans-serif; max-width: 960px; margin: 40px auto; padding: 0 16px; }}
     h1 {{ margin-bottom: 8px; }}
@@ -278,7 +298,7 @@ def ui_send():
 </head>
 <body>
   <h1>Enviar SeaTalk</h1>
-  <p class="muted">Cards usam botões <b>callback</b>; cliques chegam em <code>/callback</code>, atualizam o card e são logados no Sheets.</p>
+  <p class="muted">Cards (callback/redirect) e texto simples. Cliques de callback chegam em <code>/callback</code>, atualizam o card e são logados no Sheets.</p>
 
   <fieldset>
     <legend>Autorização da UI (opcional)</legend>
@@ -287,12 +307,13 @@ def ui_send():
   </fieldset>
 
   <div class="tabs">
-    <div class="tab active" onclick="selTab('ind')">Card — Individual</div>
-    <div class="tab" onclick="selTab('grp')">Card — Grupos</div>
+    <div class="tab active" onclick="selTab('ind')">Card — Individual (callback)</div>
+    <div class="tab" onclick="selTab('grp')">Card — Grupos (callback)</div>
+    <div class="tab" onclick="selTab('redir')">Card — Grupos (redirect)</div>
     <div class="tab" onclick="selTab('txt')">Mensagem simples (texto)</div>
   </div>
 
-  <!-- Painel: Card Individual -->
+  <!-- Painel: Card Individual (callback) -->
   <div id="panel-ind" class="panel active">
     <fieldset>
       <legend>Destino (Individual)</legend>
@@ -329,7 +350,7 @@ def ui_send():
     <pre id="out1" class="msg"></pre>
   </div>
 
-  <!-- Painel: Card Grupos -->
+  <!-- Painel: Card Grupos (callback) -->
   <div id="panel-grp" class="panel">
     <fieldset>
       <legend>Destino (Grupos)</legend>
@@ -363,9 +384,47 @@ NzYzNTgyOTcyNjY0</textarea>
       </div>
     </fieldset>
 
-    <button class="btn" onclick="enviarGrp()">Enviar (Card / Grupos)</button>
+    <button class="btn" onclick="enviarGrp()">Enviar (Card / Grupos / callback)</button>
     <h3>Resposta</h3>
     <pre id="out2" class="msg"></pre>
+  </div>
+
+  <!-- Painel: Card Grupos (redirect) -->
+  <div id="panel-redir" class="panel">
+    <fieldset>
+      <legend>Destino (Grupos)</legend>
+      <label>Group IDs (um por linha ou separados por vírgula)</label>
+      <textarea id="group_ids_redir">OTc3OTg4MjY2NTk0
+NzYzNTgyOTcyNjY0</textarea>
+    </fieldset>
+
+    <fieldset>
+      <legend>Conteúdo</legend>
+      <label>Título</label>
+      <input id="titleR" type="text" value="🔗 Ações rápidas" />
+      <label>Descrição</label>
+      <textarea id="descR">Escolha um dos links abaixo para abrir.</textarea>
+    </fieldset>
+
+    <fieldset>
+      <legend>Botões Redirect (até 3)</legend>
+      <div class="row">
+        <div><label>Rótulo</label><input id="br1_text" type="text" value="Abrir Portal" /></div>
+        <div><label>URL (https://...)</label><input id="br1_url" type="text" value="https://www.example.com" /></div>
+      </div>
+      <div class="row">
+        <div><label>Rótulo</label><input id="br2_text" type="text" value="Docs" /></div>
+        <div><label>URL (https://...)</label><input id="br2_url" type="text" value="https://www.example.com/docs" /></div>
+      </div>
+      <div class="row">
+        <div><label>Rótulo</label><input id="br3_text" type="text" value="Help" /></div>
+        <div><label>URL (https://...)</label><input id="br3_url" type="text" value="https://www.example.com/help" /></div>
+      </div>
+    </fieldset>
+
+    <button class="btn" onclick="enviarGrpRedirect()">Enviar (Card / Grupos / redirect)</button>
+    <h3>Resposta</h3>
+    <pre id="outR" class="msg"></pre>
   </div>
 
   <!-- Painel: Texto simples -->
@@ -397,7 +456,7 @@ NzYzNTgyOTcyNjY0</textarea>
 function selTab(which) {{
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
-  const map = {{'ind':0, 'grp':1, 'txt':2}};
+  const map = {{'ind':0, 'grp':1, 'redir':2, 'txt':3}};
   document.querySelectorAll('.tab')[map[which]].classList.add('active');
   document.getElementById('panel-' + which).classList.add('active');
 }}
@@ -416,6 +475,19 @@ function buildButtons(prefix) {{
   if (b2t && b2a) bts.push({{ text:b2t, action:b2a }});
   if (b3t && b3a) bts.push({{ text:b3t, action:b3a }});
   return bts;
+}}
+function buildRedirects() {{
+  const out = [];
+  const t1 = document.getElementById('br1_text').value.trim();
+  const u1 = document.getElementById('br1_url').value.trim();
+  const t2 = document.getElementById('br2_text').value.trim();
+  const u2 = document.getElementById('br2_url').value.trim();
+  const t3 = document.getElementById('br3_text').value.trim();
+  const u3 = document.getElementById('br3_url').value.trim();
+  if (t1 && u1) out.push({{ text:t1, url:u1 }});
+  if (t2 && u2) out.push({{ text:t2, url:u2 }});
+  if (t3 && u3) out.push({{ text:t3, url:u3 }});
+  return out;
 }}
 async function enviarInd() {{
   const adm = document.getElementById('adm').value.trim();
@@ -442,6 +514,19 @@ async function enviarGrp() {{
     body: JSON.stringify({{ group_ids, title, desc, buttons }})
   }});
   document.getElementById('out2').textContent = await res.text();
+}}
+async function enviarGrpRedirect() {{
+  const adm = document.getElementById('adm').value.trim();
+  const group_ids = parseList(document.getElementById('group_ids_redir').value);
+  const title  = document.getElementById('titleR').value.trim();
+  const desc   = document.getElementById('descR').value.trim();
+  const redirects = buildRedirects();
+  const res = await fetch('/api/send-group-redirect', {{
+    method:'POST',
+    headers: {{ 'Content-Type':'application/json', 'X-Admin-Token': adm }},
+    body: JSON.stringify({{ group_ids, title, desc, redirects }})
+  }});
+  document.getElementById('outR').textContent = await res.text();
 }}
 async function enviarTextoInd() {{
   const adm = document.getElementById('adm').value.trim();
@@ -550,6 +635,50 @@ def api_send_group_interactive():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.post("/api/send-group-redirect")
+def api_send_group_redirect():
+    auth_resp = _check_ui_auth()
+    if auth_resp:
+        return auth_resp
+    try:
+        body = request.get_json(force=True) or {}
+        group_ids = body.get("group_ids") or []
+        title   = (body.get("title") or "🔗 Ações rápidas").strip()
+        desc    = (body.get("desc")  or "Escolha um dos links abaixo para abrir.").strip()
+        redirects = body.get("redirects") or []
+
+        if isinstance(group_ids, str):
+            group_ids = [s.strip() for s in group_ids.replace(",", "\n").split("\n") if s.strip()]
+        else:
+            group_ids = [str(x).strip() for x in group_ids if str(x).strip()]
+        if not group_ids:
+            return jsonify({"error":"informe pelo menos um group_id"}), 400
+
+        # Valida URLs básicas
+        valids = []
+        for r in redirects[:3]:
+            t = str(r.get("text") or "").strip()
+            u = str(r.get("url") or "").strip()
+            if t and _is_http_url(u):
+                valids.append({"text": t, "url": u})
+        if not valids:
+            return jsonify({"error":"informe ao menos 1 botão com URL http(s) válida"}), 400
+
+        token = get_token()
+        elements = build_redirect_elements(title, desc, valids)
+        results = []
+
+        for gid in group_ids:
+            try:
+                rj = send_card_to_group(token, gid, elements)
+                results.append({"group_id": gid, "ok": True, "resp": rj})
+            except Exception as e:
+                results.append({"group_id": gid, "ok": False, "error": str(e)})
+
+        return jsonify({"sent": results}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.post("/api/send-text")
 def api_send_text():
     auth_resp = _check_ui_auth()
@@ -637,4 +766,3 @@ def test_send_interactive_3():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "10000"))
     app.run(host="0.0.0.0", port=port)
-
