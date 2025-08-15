@@ -18,6 +18,7 @@ SEATALK_APP_SECRET     = (os.getenv("SEATALK_APP_SECRET") or "").strip()
 SEATALK_SIGNING_SECRET = (os.getenv("SEATALK_SIGNING_SECRET") or "").strip()
 UI_ADMIN_TOKEN         = (os.getenv("UI_ADMIN_TOKEN") or "").strip()
 
+# Defaults (se a UI não enviar sheet_id/sheet_name)
 GOOGLE_SHEET_ID   = (os.getenv("GOOGLE_SHEET_ID") or "").strip()
 GOOGLE_SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME", "seatalk_logs")
 
@@ -48,15 +49,19 @@ def _ensure_headers(ws):
             "timestamp_utc", "email_or_id", "action", "message_id", "group_id"
         ]])
 
-def _append_click_row(ts_iso, email_or_id, action, message_id, group_id):
-    if not GOOGLE_SHEET_ID:
-        return
+def _append_click_row(ts_iso, email_or_id, action, message_id, group_id, sheet_id=None, sheet_name=None):
+    """Grava no Sheets; se sheet_id/name não vierem, usa os defaults das env vars."""
+    sid = (sheet_id or GOOGLE_SHEET_ID or "").strip()
+    sname = (sheet_name or GOOGLE_SHEET_NAME or "seatalk_logs").strip()
+    if not sid:
+        return  # sem planilha definida, não grava
+
     gc = _get_gspread_client()
-    sh = gc.open_by_key(GOOGLE_SHEET_ID)
+    sh = gc.open_by_key(sid)
     try:
-        ws = sh.worksheet(GOOGLE_SHEET_NAME)
+        ws = sh.worksheet(sname)
     except Exception:
-        ws = sh.add_worksheet(GOOGLE_SHEET_NAME, rows=100, cols=10)
+        ws = sh.add_worksheet(sname, rows=100, cols=10)
     _ensure_headers(ws)
     ws.append_row([ts_iso, email_or_id, action, message_id, group_id], value_input_option="USER_ENTERED")
 
@@ -93,25 +98,51 @@ def _extract_action(value):
         return str(value.get("acao", "-"))
     return "-"
 
+def _extract_sheet_meta(value) -> dict:
+    """Extrai sheet_id e sheet_name de evt.value (string JSON ou dict)."""
+    try:
+        if isinstance(value, str):
+            value = json.loads(value)
+        if isinstance(value, dict):
+            sid = str(value.get("sheet_id") or "").strip()
+            sname = str(value.get("sheet_name") or "").strip()
+            out = {}
+            if sid:
+                out["sheet_id"] = sid
+            if sname:
+                out["sheet_name"] = sname
+            return out
+    except Exception:
+        pass
+    return {}
+
 def _is_http_url(u: str) -> bool:
     return bool(re.match(r"^https?://", (u or "").strip(), flags=re.I))
 
-def build_elements(title: str, desc: str, buttons: list) -> list:
+def build_elements(title: str, desc: str, buttons: list, meta: dict | None = None) -> list:
+    """Constrói card com botões de callback. meta pode conter sheet_id/sheet_name para logging."""
     els = [
         {"element_type": "title", "title": {"text": title}},
         {"element_type": "description", "description": {"format": 1, "text": desc}},
     ]
+    meta = meta or {}
     for b in (buttons or [])[:3]:
         text = str(b.get("text") or "").strip()
         action = str(b.get("action") or "").strip()
         if not text or not action:
             continue
+        payload = {"acao": action}
+        if meta.get("sheet_id"):
+            payload["sheet_id"] = str(meta["sheet_id"]).strip()
+        if meta.get("sheet_name"):
+            payload["sheet_name"] = str(meta["sheet_name"]).strip()
+
         els.append({
             "element_type": "button",
             "button": {
                 "button_type": "callback",
                 "text": text,
-                "value": json.dumps({"acao": action})
+                "value": json.dumps(payload)
             }
         })
     return els
@@ -238,14 +269,19 @@ def seatalk_callback():
     if etype == "interactive_message_click":
         evt        = data.get("event") or {}
         message_id = str(evt.get("message_id", ""))
-        action     = _extract_action(evt.get("value"))
+        value      = evt.get("value")
+        action     = _extract_action(value)
+        meta       = _extract_sheet_meta(value)  # sheet_id/sheet_name enviados no botão
         email_or_id= str(evt.get("email") or evt.get("seatalk_id") or "")
         group_id   = str(evt.get("group_id") or evt.get("chat_id") or "")
 
         # Log Sheets (não bloqueia)
         try:
             ts_iso = datetime.now(timezone.utc).isoformat()
-            _append_click_row(ts_iso, email_or_id, action, message_id, group_id)
+            _append_click_row(
+                ts_iso, email_or_id, action, message_id, group_id,
+                sheet_id=meta.get("sheet_id"), sheet_name=meta.get("sheet_name")
+            )
         except Exception as e:
             print("sheets log error:", repr(e))
 
@@ -265,7 +301,7 @@ def seatalk_callback():
 
     return "ok", 200
 
-# Aceita POST em "/" também
+# Aceita POST em "/" também (algumas verificações usam a raiz)
 @app.post("/")
 def seatalk_callback_root():
     return seatalk_callback()
@@ -336,6 +372,15 @@ def ui_send():
     <legend>Autorização da UI (opcional)</legend>
     <label>UI Admin Token</label>
     <input id="adm" type="text" placeholder="preencha se a UI estiver protegida com UI_ADMIN_TOKEN" />
+  </fieldset>
+
+  <fieldset>
+    <legend>Destino do log (Google Sheets) — opcional</legend>
+    <label>Spreadsheet ID (a Service Account precisa ter acesso de edição)</label>
+    <input id="sheet_id" type="text" placeholder="ex.: 1A2b3C... (ID da planilha)" />
+    <label>Sheet name</label>
+    <input id="sheet_name" type="text" placeholder="ex.: seatalk_logs" />
+    <p class="muted">Se você deixar em branco, serão usados os valores-padrão de ambiente (GOOGLE_SHEET_ID / GOOGLE_SHEET_NAME).</p>
   </fieldset>
 
   <div class="tabs">
@@ -543,12 +588,14 @@ async function enviarInd() {
   var emails = parseList(document.getElementById('emails').value);
   var title  = document.getElementById('title1').value.trim();
   var desc   = document.getElementById('desc1').value.trim();
+  var sheet_id   = document.getElementById('sheet_id').value.trim();
+  var sheet_name = document.getElementById('sheet_name').value.trim();
   if (desc.length > 500) { alert('A descrição do card excede 500 caracteres.'); return; }
   var buttons= buildButtons('1');
   var res = await fetch('/api/send-interactive', {
     method:'POST',
     headers: { 'Content-Type':'application/json', 'X-Admin-Token': adm },
-    body: JSON.stringify({ emails:emails, title:title, desc:desc, buttons:buttons })
+    body: JSON.stringify({ emails:emails, title:title, desc:desc, buttons:buttons, sheet_id:sheet_id, sheet_name:sheet_name })
   });
   document.getElementById('out1').textContent = await res.text();
 }
@@ -557,12 +604,14 @@ async function enviarGrp() {
   var group_ids = parseList(document.getElementById('group_ids').value);
   var title  = document.getElementById('title2').value.trim();
   var desc   = document.getElementById('desc2').value.trim();
+  var sheet_id   = document.getElementById('sheet_id').value.trim();
+  var sheet_name = document.getElementById('sheet_name').value.trim();
   if (desc.length > 500) { alert('A descrição do card excede 500 caracteres.'); return; }
   var buttons= buildButtons('2');
   var res = await fetch('/api/send-group-interactive', {
     method:'POST',
     headers: { 'Content-Type':'application/json', 'X-Admin-Token': adm },
-    body: JSON.stringify({ group_ids:group_ids, title:title, desc:desc, buttons:buttons })
+    body: JSON.stringify({ group_ids:group_ids, title:title, desc:desc, buttons:buttons, sheet_id:sheet_id, sheet_name:sheet_name })
   });
   document.getElementById('out2').textContent = await res.text();
 }
@@ -631,6 +680,8 @@ def api_send_interactive():
         title   = (body.get("title") or "📌 Confirme sua leitura").strip()
         desc    = (body.get("desc")  or "Escolha uma das opções abaixo.").strip()
         buttons = body.get("buttons") or []
+        sheet_id   = (body.get("sheet_id") or "").strip()
+        sheet_name = (body.get("sheet_name") or "").strip()
 
         if isinstance(emails, str):
             emails = [s.strip() for s in emails.replace(",", "\n").split("\n") if s.strip()]
@@ -640,7 +691,8 @@ def api_send_interactive():
             return jsonify({"error":"informe pelo menos um e-mail"}), 400
 
         token = get_token()
-        elements = build_elements(title, desc, buttons)
+        meta  = {"sheet_id": sheet_id, "sheet_name": sheet_name}
+        elements = build_elements(title, desc, buttons, meta=meta)
         results = []
 
         for em in emails:
@@ -666,6 +718,8 @@ def api_send_group_interactive():
         title   = (body.get("title") or "📌 Confirme sua leitura").strip()
         desc    = (body.get("desc")  or "Escolha uma das opções abaixo.").strip()
         buttons = body.get("buttons") or []
+        sheet_id   = (body.get("sheet_id") or "").strip()
+        sheet_name = (body.get("sheet_name") or "").strip()
 
         if isinstance(group_ids, str):
             group_ids = [s.strip() for s in group_ids.replace(",", "\n").split("\n") if s.strip()]
@@ -675,7 +729,8 @@ def api_send_group_interactive():
             return jsonify({"error":"informe pelo menos um group_id"}), 400
 
         token = get_token()
-        elements = build_elements(title, desc, buttons)
+        meta  = {"sheet_id": sheet_id, "sheet_name": sheet_name}
+        elements = build_elements(title, desc, buttons, meta=meta)
         results = []
 
         for gid in group_ids:
@@ -810,7 +865,8 @@ def test_send_interactive_3():
         elements = build_elements(
             "📌 Confirme sua leitura",
             "Escolha uma das opções abaixo.",
-            [{"text":"✅ Sim","action":"sim"},{"text":"❌ Não","action":"nao"},{"text":"🤔 Talvez","action":"talvez"}]
+            [{"text":"✅ Sim","action":"sim"},{"text":"❌ Não","action":"nao"},{"text":"🤔 Talvez","action":"talvez"}],
+            meta={"sheet_id": GOOGLE_SHEET_ID, "sheet_name": GOOGLE_SHEET_NAME}
         )
         rj = send_card_to_employee(token, emp_code, elements)
         return jsonify(rj), 200
