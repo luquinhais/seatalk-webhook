@@ -169,6 +169,22 @@ def send_card_to_group(token: str, group_id: str, elements: list):
     r.raise_for_status()
     return r.json()
 
+def send_text_to_employee(token: str, employee_code: str, text: str):
+    h = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    payload = {"employee_code": employee_code, "message": {"tag": "text", "text": {"content": text}}}
+    r = requests.post(SINGLE_DM_URL, headers=h, json=payload, timeout=10)
+    print("send text single:", r.status_code, r.text)
+    r.raise_for_status()
+    return r.json()
+
+def send_text_to_group(token: str, group_id: str, text: str):
+    h = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    payload = {"group_id": group_id, "message": {"tag": "text", "text": {"content": text}}}
+    r = requests.post(GROUP_DM_URL, headers=h, json=payload, timeout=10)
+    print("send text group:", group_id, r.status_code, r.text)
+    r.raise_for_status()
+    return r.json()
+
 # ========= Health =========
 @app.get("/")
 def health():
@@ -182,16 +198,19 @@ def seatalk_callback():
     etype = str(data.get("event_type", ""))
     sig   = request.headers.get("Signature") or request.headers.get("signature") or ""
 
+    # Verificação do endpoint
     if etype == "event_verification":
         ch = (data.get("event") or {}).get("seatalk_challenge")
         return jsonify({"seatalk_challenge": ch}), 200
 
+    # Assinatura (opcional)
     if SEATALK_SIGNING_SECRET:
         calc = expected_signature(raw)
         if not sig or calc.lower() != sig.lower():
             print("signature mismatch", sig, calc)
-            # return "unauthorized", 403  # se quiser bloquear
+            # return "unauthorized", 403  # habilite se quiser bloquear
 
+    # Clique em card
     if etype == "interactive_message_click":
         evt        = data.get("event") or {}
         message_id = str(evt.get("message_id", ""))
@@ -199,12 +218,14 @@ def seatalk_callback():
         email_or_id= str(evt.get("email") or evt.get("seatalk_id") or "")
         group_id   = str(evt.get("group_id") or evt.get("chat_id") or "")
 
+        # Log Sheets (não bloqueia)
         try:
             ts_iso = datetime.now(timezone.utc).isoformat()
             _append_click_row(ts_iso, email_or_id, action, message_id, group_id)
         except Exception as e:
             print("sheets log error:", repr(e))
 
+        # Atualiza o card
         if message_id:
             try:
                 elements = [
@@ -220,6 +241,7 @@ def seatalk_callback():
 
     return "ok", 200
 
+# Aceita POST em "/" também
 @app.post("/")
 def seatalk_callback_root():
     return seatalk_callback()
@@ -234,9 +256,9 @@ def ui_send():
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Enviar Card SeaTalk</title>
+  <title>Enviar SeaTalk</title>
   <style>
-    body {{ font-family: system-ui, Arial, sans-serif; max-width: 920px; margin: 40px auto; padding: 0 16px; }}
+    body {{ font-family: system-ui, Arial, sans-serif; max-width: 960px; margin: 40px auto; padding: 0 16px; }}
     h1 {{ margin-bottom: 8px; }}
     fieldset {{ border: 1px solid #ddd; padding: 16px; border-radius: 12px; margin-bottom: 16px; }}
     label {{ display:block; font-size:14px; margin:10px 0 4px; }}
@@ -246,7 +268,7 @@ def ui_send():
     .btn {{ background:#111; color:#fff; border:none; padding:12px 16px; border-radius:10px; cursor:pointer; }}
     .btn:hover {{ opacity:.9; }}
     .muted {{ color:#666; font-size:13px; }}
-    .tabs {{ display:flex; gap:8px; margin:16px 0; }}
+    .tabs {{ display:flex; gap:8px; margin:16px 0; flex-wrap: wrap; }}
     .tab {{ padding:8px 12px; border:1px solid #ccc; border-radius:8px; cursor:pointer; }}
     .tab.active {{ background:#111; color:#fff; border-color:#111; }}
     .panel {{ display:none; }}
@@ -255,8 +277,8 @@ def ui_send():
   </style>
 </head>
 <body>
-  <h1>Enviar Card SeaTalk</h1>
-  <p class="muted">Os botões são <b>callback</b> (clique chega em <code>/callback</code>), o card é atualizado e o clique é logado no Sheets.</p>
+  <h1>Enviar SeaTalk</h1>
+  <p class="muted">Cards usam botões <b>callback</b>; cliques chegam em <code>/callback</code>, atualizam o card e são logados no Sheets.</p>
 
   <fieldset>
     <legend>Autorização da UI (opcional)</legend>
@@ -265,10 +287,12 @@ def ui_send():
   </fieldset>
 
   <div class="tabs">
-    <div class="tab active" onclick="selTab('ind')">Individual</div>
-    <div class="tab" onclick="selTab('grp')">Grupos</div>
+    <div class="tab active" onclick="selTab('ind')">Card — Individual</div>
+    <div class="tab" onclick="selTab('grp')">Card — Grupos</div>
+    <div class="tab" onclick="selTab('txt')">Mensagem simples (texto)</div>
   </div>
 
+  <!-- Painel: Card Individual -->
   <div id="panel-ind" class="panel active">
     <fieldset>
       <legend>Destino (Individual)</legend>
@@ -300,17 +324,19 @@ def ui_send():
       </div>
     </fieldset>
 
-    <button class="btn" onclick="enviarInd()">Enviar (Individual)</button>
+    <button class="btn" onclick="enviarInd()">Enviar (Card / Individual)</button>
     <h3>Resposta</h3>
     <pre id="out1" class="msg"></pre>
   </div>
 
+  <!-- Painel: Card Grupos -->
   <div id="panel-grp" class="panel">
     <fieldset>
       <legend>Destino (Grupos)</legend>
       <label>Group IDs (um por linha ou separados por vírgula)</label>
-      <textarea id="group_ids">{preset_groups}</textarea>
-      <p class="muted">Exemplo: Grupo de teste A: OTc3OTg4MjY2NTk0 • Grupo de teste B: NzYzNTgyOTcyNjY0</p>
+      <textarea id="group_ids">OTc3OTg4MjY2NTk0
+NzYzNTgyOTcyNjY0</textarea>
+      <p class="muted">Ex.: Grupo A: OTc3OTg4MjY2NTk0 • Grupo B: NzYzNTgyOTcyNjY0</p>
     </fieldset>
 
     <fieldset>
@@ -337,25 +363,46 @@ def ui_send():
       </div>
     </fieldset>
 
-    <button class="btn" onclick="enviarGrp()">Enviar (Grupos)</button>
+    <button class="btn" onclick="enviarGrp()">Enviar (Card / Grupos)</button>
     <h3>Resposta</h3>
     <pre id="out2" class="msg"></pre>
+  </div>
+
+  <!-- Painel: Texto simples -->
+  <div id="panel-txt" class="panel">
+    <fieldset>
+      <legend>Individual</legend>
+      <label>E-mails (um por linha ou separados por vírgula)</label>
+      <textarea id="emails_txt" placeholder="alguem@empresa.com&#10;outra@empresa.com"></textarea>
+      <label>Mensagem de texto</label>
+      <textarea id="text_msg_ind" placeholder="Digite a mensagem a ser enviada individualmente"></textarea>
+      <button class="btn" onclick="enviarTextoInd()">Enviar texto (Individual)</button>
+    </fieldset>
+
+    <fieldset>
+      <legend>Grupos</legend>
+      <label>Group IDs (um por linha ou separados por vírgula)</label>
+      <textarea id="group_ids_txt">OTc3OTg4MjY2NTk0
+NzYzNTgyOTcyNjY0</textarea>
+      <label>Mensagem de texto</label>
+      <textarea id="text_msg_grp" placeholder="Digite a mensagem a ser enviada para os grupos"></textarea>
+      <button class="btn" onclick="enviarTextoGrp()">Enviar texto (Grupos)</button>
+    </fieldset>
+
+    <h3>Resposta</h3>
+    <pre id="out3" class="msg"></pre>
   </div>
 
 <script>
 function selTab(which) {{
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
-  if (which === 'ind') {{
-    document.querySelectorAll('.tab')[0].classList.add('active');
-    document.getElementById('panel-ind').classList.add('active');
-  }} else {{
-    document.querySelectorAll('.tab')[1].classList.add('active');
-    document.getElementById('panel-grp').classList.add('active');
-  }}
+  const map = {{'ind':0, 'grp':1, 'txt':2}};
+  document.querySelectorAll('.tab')[map[which]].classList.add('active');
+  document.getElementById('panel-' + which).classList.add('active');
 }}
 function parseList(txt) {{
-  return txt.split(/[,\\n]/).map(s => s.trim()).filter(Boolean);
+  return txt.split(/[\\n,]/).map(s => s.trim()).filter(Boolean);
 }}
 function buildButtons(prefix) {{
   const bts = [];
@@ -381,8 +428,7 @@ async function enviarInd() {{
     headers: {{ 'Content-Type':'application/json', 'X-Admin-Token': adm }},
     body: JSON.stringify({{ emails, title, desc, buttons }})
   }});
-  const txt = await res.text();
-  document.getElementById('out1').textContent = txt;
+  document.getElementById('out1').textContent = await res.text();
 }}
 async function enviarGrp() {{
   const adm = document.getElementById('adm').value.trim();
@@ -395,8 +441,29 @@ async function enviarGrp() {{
     headers: {{ 'Content-Type':'application/json', 'X-Admin-Token': adm }},
     body: JSON.stringify({{ group_ids, title, desc, buttons }})
   }});
-  const txt = await res.text();
-  document.getElementById('out2').textContent = txt;
+  document.getElementById('out2').textContent = await res.text();
+}}
+async function enviarTextoInd() {{
+  const adm = document.getElementById('adm').value.trim();
+  const emails = parseList(document.getElementById('emails_txt').value);
+  const text   = document.getElementById('text_msg_ind').value.trim();
+  const res = await fetch('/api/send-text', {{
+    method:'POST',
+    headers: {{ 'Content-Type':'application/json', 'X-Admin-Token': adm }},
+    body: JSON.stringify({{ emails, text }})
+  }});
+  document.getElementById('out3').textContent = await res.text();
+}}
+async function enviarTextoGrp() {{
+  const adm = document.getElementById('adm').value.trim();
+  const group_ids = parseList(document.getElementById('group_ids_txt').value);
+  const text      = document.getElementById('text_msg_grp').value.trim();
+  const res = await fetch('/api/send-group-text', {{
+    method:'POST',
+    headers: {{ 'Content-Type':'application/json', 'X-Admin-Token': adm }},
+    body: JSON.stringify({{ group_ids, text }})
+  }});
+  document.getElementById('out3').textContent = await res.text();
 }}
 </script>
 </body>
@@ -404,7 +471,7 @@ async function enviarGrp() {{
     """
     return html, 200, {"Content-Type": "text/html; charset=utf-8"}
 
-# ========= APIs de envio =========
+# ========= Auth da UI =========
 def _check_ui_auth():
     if not UI_ADMIN_TOKEN:
         return None  # sem proteção
@@ -413,6 +480,7 @@ def _check_ui_auth():
         return jsonify({"error":"unauthorized"}), 403
     return None
 
+# ========= APIs de envio =========
 @app.post("/api/send-interactive")
 def api_send_interactive():
     auth_resp = _check_ui_auth()
@@ -425,7 +493,6 @@ def api_send_interactive():
         desc    = (body.get("desc")  or "Escolha uma das opções abaixo.").strip()
         buttons = body.get("buttons") or []
 
-        # normaliza emails: aceita string, array; separa por vírgulas/quebras de linha
         if isinstance(emails, str):
             emails = [s.strip() for s in emails.replace(",", "\n").split("\n") if s.strip()]
         else:
@@ -461,7 +528,6 @@ def api_send_group_interactive():
         desc    = (body.get("desc")  or "Escolha uma das opções abaixo.").strip()
         buttons = body.get("buttons") or []
 
-        # normaliza IDs: aceita string, array; separa por vírgulas/quebras de linha
         if isinstance(group_ids, str):
             group_ids = [s.strip() for s in group_ids.replace(",", "\n").split("\n") if s.strip()]
         else:
@@ -480,6 +546,69 @@ def api_send_group_interactive():
             except Exception as e:
                 results.append({"group_id": gid, "ok": False, "error": str(e)})
 
+        return jsonify({"sent": results}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.post("/api/send-text")
+def api_send_text():
+    auth_resp = _check_ui_auth()
+    if auth_resp:
+        return auth_resp
+    try:
+        body = request.get_json(force=True) or {}
+        emails = body.get("emails") or []
+        text   = (body.get("text") or "").strip()
+
+        if isinstance(emails, str):
+            emails = [s.strip() for s in emails.replace(",", "\n").split("\n") if s.strip()]
+        else:
+            emails = [str(x).strip() for x in emails if str(x).strip()]
+        if not emails:
+            return jsonify({"error": "informe pelo menos um e-mail"}), 400
+        if not text:
+            return jsonify({"error": "texto é obrigatório"}), 400
+
+        token = get_token()
+        results = []
+        for em in emails:
+            try:
+                emp_code = resolve_employee_code(token, em)
+                rj = send_text_to_employee(token, emp_code, text)
+                results.append({"email": em, "ok": True, "resp": rj})
+            except Exception as e:
+                results.append({"email": em, "ok": False, "error": str(e)})
+        return jsonify({"sent": results}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.post("/api/send-group-text")
+def api_send_group_text():
+    auth_resp = _check_ui_auth()
+    if auth_resp:
+        return auth_resp
+    try:
+        body = request.get_json(force=True) or {}
+        group_ids = body.get("group_ids") or []
+        text      = (body.get("text") or "").strip()
+
+        if isinstance(group_ids, str):
+            group_ids = [s.strip() for s in group_ids.replace(",", "\n").split("\n") if s.strip()]
+        else:
+            group_ids = [str(x).strip() for x in group_ids if str(x).strip()]
+        if not group_ids:
+            return jsonify({"error": "informe pelo menos um group_id"}), 400
+        if not text:
+            return jsonify({"error": "texto é obrigatório"}), 400
+
+        token = get_token()
+        results = []
+        for gid in group_ids:
+            try:
+                rj = send_text_to_group(token, gid, text)
+                results.append({"group_id": gid, "ok": True, "resp": rj})
+            except Exception as e:
+                results.append({"group_id": gid, "ok": False, "error": str(e)})
         return jsonify({"sent": results}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
