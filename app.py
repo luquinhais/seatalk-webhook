@@ -97,7 +97,6 @@ def _is_http_url(u: str) -> bool:
     return bool(re.match(r"^https?://", (u or "").strip(), flags=re.I))
 
 def build_elements(title: str, desc: str, buttons: list) -> list:
-    """Card com botões callback (para Individual/Grupos)."""
     els = [
         {"element_type": "title", "title": {"text": title}},
         {"element_type": "description", "description": {"format": 1, "text": desc}},
@@ -118,7 +117,6 @@ def build_elements(title: str, desc: str, buttons: list) -> list:
     return els
 
 def build_redirect_elements(title: str, desc: str, redirects: list) -> list:
-    """Card com botões redirect (para Grupos). redirects: [{text, url}]"""
     els = [
         {"element_type": "title", "title": {"text": title}},
         {"element_type": "description", "description": {"format": 1, "text": desc}},
@@ -234,7 +232,7 @@ def seatalk_callback():
         calc = expected_signature(raw)
         if not sig or calc.lower() != sig.lower():
             print("signature mismatch", sig, calc)
-            # return "unauthorized", 403  # habilite se quiser bloquear
+            # return "unauthorized", 403
 
     # Clique em card
     if etype == "interactive_message_click":
@@ -272,11 +270,10 @@ def seatalk_callback():
 def seatalk_callback_root():
     return seatalk_callback()
 
-# ========= UI =========
+# ========= UI (SEM f-string) =========
 @app.get("/ui")
 def ui_send():
-    preset_groups = "OTc3OTg4MjY2NTk0\nNzYzNTgyOTcyNjY0"
-    html = f"""
+    html = """
 <!doctype html>
 <html lang="pt-br">
 <head>
@@ -284,31 +281,31 @@ def ui_send():
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Enviar SeaTalk</title>
   <style>
-    body {{ font-family: system-ui, Arial, sans-serif; max-width: 960px; margin: 40px auto; padding: 0 16px; }}
-    h1 {{ margin-bottom: 8px; }}
-    fieldset {{ border: 1px solid #ddd; padding: 16px; border-radius: 12px; margin-bottom: 16px; }}
-    label {{ display:block; font-size:14px; margin:10px 0 4px; }}
-    input[type=text], input[type=email], textarea {{ width:100%; padding:10px; border:1px solid #ccc; border-radius:8px; }}
-    textarea {{ min-height: 80px; }}
-    .row {{ display:grid; grid-template-columns: 1fr 1fr; gap:12px; }}
-    .btn {{ background:#111; color:#fff; border:none; padding:12px 16px; border-radius:10px; cursor:pointer; }}
-    .btn:hover {{ opacity:.9; }}
-    .muted {{ color:#666; font-size:13px; }}
-    .tabs {{ display:flex; gap:8px; margin:16px 0; flex-wrap: wrap; }}
-    .tab {{ padding:8px 12px; border:1px solid #ccc; border-radius:8px; cursor:pointer; }}
-    .tab.active {{ background:#111; color:#fff; border-color:#111; }}
-    .panel {{ display:none; }}
-    .panel.active {{ display:block; }}
-    .msg {{ white-space: pre-wrap; background:#f7f7f7; padding:10px; border-radius:8px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }}
-    .notice {{
+    body { font-family: system-ui, Arial, sans-serif; max-width: 960px; margin: 40px auto; padding: 0 16px; }
+    h1 { margin-bottom: 8px; }
+    fieldset { border: 1px solid #ddd; padding: 16px; border-radius: 12px; margin-bottom: 16px; }
+    label { display:block; font-size:14px; margin:10px 0 4px; }
+    input[type=text], input[type=email], textarea { width:100%; padding:10px; border:1px solid #ccc; border-radius:8px; }
+    textarea { min-height: 80px; }
+    .row { display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
+    .btn { background:#111; color:#fff; border:none; padding:12px 16px; border-radius:10px; cursor:pointer; }
+    .btn:hover { opacity:.9; }
+    .muted { color:#666; font-size:13px; }
+    .tabs { display:flex; gap:8px; margin:16px 0; flex-wrap: wrap; }
+    .tab { padding:8px 12px; border:1px solid #ccc; border-radius:8px; cursor:pointer; }
+    .tab.active { background:#111; color:#fff; border-color:#111; }
+    .panel { display:none; }
+    .panel.active { display:block; }
+    .msg { white-space: pre-wrap; background:#f7f7f7; padding:10px; border-radius:8px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .notice {
       background:#0b3a7e; color:#fff; padding:14px 16px; border-radius:12px; margin:16px 0;
       line-height:1.4; box-shadow:0 2px 10px rgba(0,0,0,.06);
-    }}
-    .notice code {{ background: rgba(255,255,255,.12); padding:2px 6px; border-radius:6px; color:#fff; }}
-    .counter {{ font-size:12px; margin-top:6px; }}
-    .counter.limit-ok {{ color:#666; }}
-    .counter.limit-warn {{ color:#b45309; }}
-    .counter.limit-bad {{ color:#b91c1c; }}
+    }
+    .notice code { background: rgba(255,255,255,.12); padding:2px 6px; border-radius:6px; color:#fff; }
+    .counter { font-size:12px; margin-top:6px; }
+    .counter.limit-ok { color:#666; }
+    .counter.limit-warn { color:#b45309; }
+    .counter.limit-bad { color:#b91c1c; }
   </style>
 </head>
 <body>
@@ -494,45 +491,45 @@ NzYzNTgyOTcyNjY0</textarea>
 
 <script>
 function selTab(which) {
-  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
-  const map = {'ind':0, 'grp':1, 'redir':2, 'txt':3};
+  document.querySelectorAll('.tab').forEach(function(t){ t.classList.remove('active'); });
+  document.querySelectorAll('.panel').forEach(function(p){ p.classList.remove('active'); });
+  var map = {'ind':0, 'grp':1, 'redir':2, 'txt':3};
   document.querySelectorAll('.tab')[map[which]].classList.add('active');
   document.getElementById('panel-' + which).classList.add('active');
 }
 function parseList(txt) {
-  return txt.split(/[\\n,]/).map(s => s.trim()).filter(Boolean);
+  return txt.split(/[\\n,]/).map(function(s){ return s.trim(); }).filter(Boolean);
 }
 function buildButtons(prefix) {
-  const bts = [];
-  const b1t = document.getElementById('b1_text'+prefix).value.trim();
-  const b1a = document.getElementById('b1_action'+prefix).value.trim();
-  const b2t = document.getElementById('b2_text'+prefix).value.trim();
-  const b2a = document.getElementById('b2_action'+prefix).value.trim();
-  const b3t = document.getElementById('b3_text'+prefix).value.trim();
-  const b3a = document.getElementById('b3_action'+prefix).value.trim();
+  var bts = [];
+  var b1t = document.getElementById('b1_text'+prefix).value.trim();
+  var b1a = document.getElementById('b1_action'+prefix).value.trim();
+  var b2t = document.getElementById('b2_text'+prefix).value.trim();
+  var b2a = document.getElementById('b2_action'+prefix).value.trim();
+  var b3t = document.getElementById('b3_text'+prefix).value.trim();
+  var b3a = document.getElementById('b3_action'+prefix).value.trim();
   if (b1t && b1a) bts.push({ text:b1t, action:b1a });
   if (b2t && b2a) bts.push({ text:b2t, action:b2a });
   if (b3t && b3a) bts.push({ text:b3t, action:b3a });
   return bts;
 }
 function buildRedirects() {
-  const out = [];
-  const t1 = document.getElementById('br1_text').value.trim();
-  const u1 = document.getElementById('br1_url').value.trim();
-  const t2 = document.getElementById('br2_text').value.trim();
-  const u2 = document.getElementById('br2_url').value.trim();
-  const t3 = document.getElementById('br3_text').value.trim();
-  const u3 = document.getElementById('br3_url').value.trim();
+  var out = [];
+  var t1 = document.getElementById('br1_text').value.trim();
+  var u1 = document.getElementById('br1_url').value.trim();
+  var t2 = document.getElementById('br2_text').value.trim();
+  var u2 = document.getElementById('br2_url').value.trim();
+  var t3 = document.getElementById('br3_text').value.trim();
+  var u3 = document.getElementById('br3_url').value.trim();
   if (t1 && u1) out.push({ text:t1, url:u1 });
   if (t2 && u2) out.push({ text:t2, url:u2 });
   if (t3 && u3) out.push({ text:t3, url:u3 });
   return out;
 }
 function updateCount(id, limit) {
-  const el = document.getElementById(id);
-  const cnt = document.getElementById(id + '_count');
-  const len = el.value.length;
+  var el = document.getElementById(id);
+  var cnt = document.getElementById(id + '_count');
+  var len = el.value.length;
   cnt.textContent = len + ' / ' + limit;
   cnt.classList.remove('limit-ok','limit-warn','limit-bad');
   if (len <= limit) {
@@ -542,68 +539,68 @@ function updateCount(id, limit) {
   }
 }
 async function enviarInd() {
-  const adm = document.getElementById('adm').value.trim();
-  const emails = parseList(document.getElementById('emails').value);
-  const title  = document.getElementById('title1').value.trim();
-  const desc   = document.getElementById('desc1').value.trim();
+  var adm = document.getElementById('adm').value.trim();
+  var emails = parseList(document.getElementById('emails').value);
+  var title  = document.getElementById('title1').value.trim();
+  var desc   = document.getElementById('desc1').value.trim();
   if (desc.length > 500) { alert('A descrição do card excede 500 caracteres.'); return; }
-  const buttons= buildButtons('1');
-  const res = await fetch('/api/send-interactive', {
+  var buttons= buildButtons('1');
+  var res = await fetch('/api/send-interactive', {
     method:'POST',
     headers: { 'Content-Type':'application/json', 'X-Admin-Token': adm },
-    body: JSON.stringify({ emails, title, desc, buttons })
+    body: JSON.stringify({ emails:emails, title:title, desc:desc, buttons:buttons })
   });
   document.getElementById('out1').textContent = await res.text();
 }
 async function enviarGrp() {
-  const adm = document.getElementById('adm').value.trim();
-  const group_ids = parseList(document.getElementById('group_ids').value);
-  const title  = document.getElementById('title2').value.trim();
-  const desc   = document.getElementById('desc2').value.trim();
+  var adm = document.getElementById('adm').value.trim();
+  var group_ids = parseList(document.getElementById('group_ids').value);
+  var title  = document.getElementById('title2').value.trim();
+  var desc   = document.getElementById('desc2').value.trim();
   if (desc.length > 500) { alert('A descrição do card excede 500 caracteres.'); return; }
-  const buttons= buildButtons('2');
-  const res = await fetch('/api/send-group-interactive', {
+  var buttons= buildButtons('2');
+  var res = await fetch('/api/send-group-interactive', {
     method:'POST',
     headers: { 'Content-Type':'application/json', 'X-Admin-Token': adm },
-    body: JSON.stringify({ group_ids, title, desc, buttons })
+    body: JSON.stringify({ group_ids:group_ids, title:title, desc:desc, buttons:buttons })
   });
   document.getElementById('out2').textContent = await res.text();
 }
 async function enviarGrpRedirect() {
-  const adm = document.getElementById('adm').value.trim();
-  const group_ids = parseList(document.getElementById('group_ids_redir').value);
-  const title  = document.getElementById('titleR').value.trim();
-  const desc   = document.getElementById('descR').value.trim();
+  var adm = document.getElementById('adm').value.trim();
+  var group_ids = parseList(document.getElementById('group_ids_redir').value);
+  var title  = document.getElementById('titleR').value.trim();
+  var desc   = document.getElementById('descR').value.trim();
   if (desc.length > 500) { alert('A descrição do card excede 500 caracteres.'); return; }
-  const redirects = buildRedirects();
-  const res = await fetch('/api/send-group-redirect', {
+  var redirects = buildRedirects();
+  var res = await fetch('/api/send-group-redirect', {
     method:'POST',
     headers: { 'Content-Type':'application/json', 'X-Admin-Token': adm },
-    body: JSON.stringify({ group_ids, title, desc, redirects })
+    body: JSON.stringify({ group_ids:group_ids, title:title, desc:desc, redirects:redirects })
   });
   document.getElementById('outR').textContent = await res.text();
 }
 async function enviarTextoInd() {
-  const adm = document.getElementById('adm').value.trim();
-  const emails = parseList(document.getElementById('emails_txt').value);
-  const text   = document.getElementById('text_msg_ind').value.trim();
+  var adm = document.getElementById('adm').value.trim();
+  var emails = parseList(document.getElementById('emails_txt').value);
+  var text   = document.getElementById('text_msg_ind').value.trim();
   if (text.length > 4096) { alert('A mensagem de texto excede 4096 caracteres.'); return; }
-  const res = await fetch('/api/send-text', {
+  var res = await fetch('/api/send-text', {
     method:'POST',
     headers: { 'Content-Type':'application/json', 'X-Admin-Token': adm },
-    body: JSON.stringify({ emails, text })
+    body: JSON.stringify({ emails:emails, text:text })
   });
   document.getElementById('out3').textContent = await res.text();
 }
 async function enviarTextoGrp() {
-  const adm = document.getElementById('adm').value.trim();
-  const group_ids = parseList(document.getElementById('group_ids_txt').value);
-  const text      = document.getElementById('text_msg_grp').value.trim();
+  var adm = document.getElementById('adm').value.trim();
+  var group_ids = parseList(document.getElementById('group_ids_txt').value);
+  var text      = document.getElementById('text_msg_grp').value.trim();
   if (text.length > 4096) { alert('A mensagem de texto excede 4096 caracteres.'); return; }
-  const res = await fetch('/api/send-group-text', {
+  var res = await fetch('/api/send-group-text', {
     method:'POST',
     headers: { 'Content-Type':'application/json', 'X-Admin-Token': adm },
-    body: JSON.stringify({ group_ids, text })
+    body: JSON.stringify({ group_ids:group_ids, text:text })
   });
   document.getElementById('out3').textContent = await res.text();
 }
