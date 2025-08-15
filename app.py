@@ -224,16 +224,19 @@ def seatalk_callback():
     etype = str(data.get("event_type", ""))
     sig   = request.headers.get("Signature") or request.headers.get("signature") or ""
 
+    # Verificação do endpoint
     if etype == "event_verification":
         ch = (data.get("event") or {}).get("seatalk_challenge")
         return jsonify({"seatalk_challenge": ch}), 200
 
+    # Assinatura (opcional)
     if SEATALK_SIGNING_SECRET:
         calc = expected_signature(raw)
         if not sig or calc.lower() != sig.lower():
             print("signature mismatch", sig, calc)
-            # return "unauthorized", 403
+            # return "unauthorized", 403  # habilite se quiser bloquear
 
+    # Clique em card
     if etype == "interactive_message_click":
         evt        = data.get("event") or {}
         message_id = str(evt.get("message_id", ""))
@@ -241,12 +244,14 @@ def seatalk_callback():
         email_or_id= str(evt.get("email") or evt.get("seatalk_id") or "")
         group_id   = str(evt.get("group_id") or evt.get("chat_id") or "")
 
+        # Log Sheets (não bloqueia)
         try:
             ts_iso = datetime.now(timezone.utc).isoformat()
             _append_click_row(ts_iso, email_or_id, action, message_id, group_id)
         except Exception as e:
             print("sheets log error:", repr(e))
 
+        # Atualiza o card
         if message_id:
             try:
                 elements = [
@@ -262,309 +267,12 @@ def seatalk_callback():
 
     return "ok", 200
 
+# Aceita POST em "/" também
 @app.post("/")
 def seatalk_callback_root():
     return seatalk_callback()
 
 # ========= UI =========
-@app.get("/ui")
-def ui_send():
-    preset_groups = "OTc3OTg4MjY2NTk0\nNzYzNTgyOTcyNjY0"
-    html = f"""
-<!doctype html>
-<html lang="pt-br">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Seatalk Announcement</title>
-  <style>
-    body {{ font-family: system-ui, Arial, sans-serif; max-width: 960px; margin: 40px auto; padding: 0 16px; }}
-    h1 {{ margin-bottom: 8px; }}
-    fieldset {{ border: 1px solid #ddd; padding: 16px; border-radius: 12px; margin-bottom: 16px; }}
-    label {{ display:block; font-size:14px; margin:10px 0 4px; }}
-    input[type=text], input[type=email], textarea {{ width:100%; padding:10px; border:1px solid #ccc; border-radius:8px; }}
-    textarea {{ min-height: 80px; }}
-    .row {{ display:grid; grid-template-columns: 1fr 1fr; gap:12px; }}
-    .btn {{ background:#111; color:#fff; border:none; padding:12px 16px; border-radius:10px; cursor:pointer; }}
-    .btn:hover {{ opacity:.9; }}
-    .muted {{ color:#666; font-size:13px; }}
-    .tabs {{ display:flex; gap:8px; margin:16px 0; flex-wrap: wrap; }}
-    .tab {{ padding:8px 12px; border:1px solid #ccc; border-radius:8px; cursor:pointer; }}
-    .tab.active {{ background:#111; color:#fff; border-color:#111; }}
-    .panel {{ display:none; }}
-    .panel.active {{ display:block; }}
-    .msg {{ white-space: pre-wrap; background:#f7f7f7; padding:10px; border-radius:8px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }}
-  </style>
-</head>
-<body>
-  <h1>Enviar SeaTalk</h1>
-  <p class="muted">Cards (callback/redirect) e texto simples. Cliques de callback chegam em <code>/callback</code>, atualizam o card e são logados no Sheets.</p>
-
-  <fieldset>
-    <legend>Autorização da UI (opcional)</legend>
-    <label>UI Admin Token</label>
-    <input id="adm" type="text" placeholder="preencha se a UI estiver protegida com UI_ADMIN_TOKEN" />
-  </fieldset>
-
-  <div class="tabs">
-    <div class="tab active" onclick="selTab('ind')">Card — Individual (callback)</div>
-    <div class="tab" onclick="selTab('grp')">Card — Grupos (callback)</div>
-    <div class="tab" onclick="selTab('redir')">Card — Grupos (redirect)</div>
-    <div class="tab" onclick="selTab('txt')">Mensagem simples (texto)</div>
-  </div>
-
-  <!-- Painel: Card Individual (callback) -->
-  <div id="panel-ind" class="panel active">
-    <fieldset>
-      <legend>Destino (Individual)</legend>
-      <label>E-mails (um por linha ou separados por vírgula)</label>
-      <textarea id="emails" placeholder="alguem@empresa.com&#10;outra@empresa.com"></textarea>
-    </fieldset>
-
-    <fieldset>
-      <legend>Conteúdo</legend>
-      <label>Título</label>
-      <input id="title1" type="text" value="📌 Confirme sua leitura" />
-      <label>Descrição</label>
-      <textarea id="desc1">Escolha uma das opções abaixo.</textarea>
-    </fieldset>
-
-    <fieldset>
-      <legend>Botões (até 3)</legend>
-      <div class="row">
-        <div><label>Rótulo</label><input id="b1_text1" type="text" value="✅ Sim" /></div>
-        <div><label>Ação</label><input id="b1_action1" type="text" value="sim" /></div>
-      </div>
-      <div class="row">
-        <div><label>Rótulo</label><input id="b2_text1" type="text" value="❌ Não" /></div>
-        <div><label>Ação</label><input id="b2_action1" type="text" value="nao" /></div>
-      </div>
-      <div class="row">
-        <div><label>Rótulo</label><input id="b3_text1" type="text" value="🤔 Talvez" /></div>
-        <div><label>Ação</label><input id="b3_action1" type="text" value="talvez" /></div>
-      </div>
-    </fieldset>
-
-    <button class="btn" onclick="enviarInd()">Enviar (Card / Individual)</button>
-    <h3>Resposta</h3>
-    <pre id="out1" class="msg"></pre>
-  </div>
-
-  <!-- Painel: Card Grupos (callback) -->
-  <div id="panel-grp" class="panel">
-    <fieldset>
-      <legend>Destino (Grupos)</legend>
-      <label>Group IDs (um por linha ou separados por vírgula)</label>
-      <textarea id="group_ids">OTc3OTg4MjY2NTk0
-NzYzNTgyOTcyNjY0</textarea>
-      <p class="muted">Ex.: Grupo A: OTc3OTg4MjY2NTk0 • Grupo B: NzYzNTgyOTcyNjY0</p>
-    </fieldset>
-
-    <fieldset>
-      <legend>Conteúdo</legend>
-      <label>Título</label>
-      <input id="title2" type="text" value="📌 Confirme sua leitura" />
-      <label>Descrição</label>
-      <textarea id="desc2">Escolha uma das opções abaixo.</textarea>
-    </fieldset>
-
-    <fieldset>
-      <legend>Botões (até 3)</legend>
-      <div class="row">
-        <div><label>Rótulo</label><input id="b1_text2" type="text" value="✅ Sim" /></div>
-        <div><label>Ação</label><input id="b1_action2" type="text" value="sim" /></div>
-      </div>
-      <div class="row">
-        <div><label>Rótulo</label><input id="b2_text2" type="text" value="❌ Não" /></div>
-        <div><label>Ação</label><input id="b2_action2" type="text" value="nao" /></div>
-      </div>
-      <div class="row">
-        <div><label>Rótulo</label><input id="b3_text2" type="text" value="🤔 Talvez" /></div>
-        <div><label>Ação</label><input id="b3_action2" type="text" value="talvez" /></div>
-      </div>
-    </fieldset>
-
-    <button class="btn" onclick="enviarGrp()">Enviar (Card / Grupos / callback)</button>
-    <h3>Resposta</h3>
-    <pre id="out2" class="msg"></pre>
-  </div>
-
-  <!-- Painel: Card Grupos (redirect) -->
-  <div id="panel-redir" class="panel">
-    <fieldset>
-      <legend>Destino (Grupos)</legend>
-      <label>Group IDs (um por linha ou separados por vírgula)</label>
-      <textarea id="group_ids_redir">OTc3OTg4MjY2NTk0
-NzYzNTgyOTcyNjY0</textarea>
-    </fieldset>
-
-    <fieldset>
-      <legend>Conteúdo</legend>
-      <label>Título</label>
-      <input id="titleR" type="text" value="🔗 Ações rápidas" />
-      <label>Descrição</label>
-      <textarea id="descR">Escolha um dos links abaixo para abrir.</textarea>
-    </fieldset>
-
-    <fieldset>
-      <legend>Botões Redirect (até 3)</legend>
-      <div class="row">
-        <div><label>Rótulo</label><input id="br1_text" type="text" value="Abrir Portal" /></div>
-        <div><label>URL (https://...)</label><input id="br1_url" type="text" value="https://www.example.com" /></div>
-      </div>
-      <div class="row">
-        <div><label>Rótulo</label><input id="br2_text" type="text" value="Docs" /></div>
-        <div><label>URL (https://...)</label><input id="br2_url" type="text" value="https://www.example.com/docs" /></div>
-      </div>
-      <div class="row">
-        <div><label>Rótulo</label><input id="br3_text" type="text" value="Help" /></div>
-        <div><label>URL (https://...)</label><input id="br3_url" type="text" value="https://www.example.com/help" /></div>
-      </div>
-    </fieldset>
-
-    <button class="btn" onclick="enviarGrpRedirect()">Enviar (Card / Grupos / redirect)</button>
-    <h3>Resposta</h3>
-    <pre id="outR" class="msg"></pre>
-  </div>
-
-  <!-- Painel: Texto simples -->
-  <div id="panel-txt" class="panel">
-    <fieldset>
-      <legend>Individual</legend>
-      <label>E-mails (um por linha ou separados por vírgula)</label>
-      <textarea id="emails_txt" placeholder="alguem@empresa.com&#10;outra@empresa.com"></textarea>
-      <label>Mensagem de texto</label>
-      <textarea id="text_msg_ind" placeholder="Digite a mensagem a ser enviada individualmente"></textarea>
-      <button class="btn" onclick="enviarTextoInd()">Enviar texto (Individual)</button>
-    </fieldset>
-
-    <fieldset>
-      <legend>Grupos</legend>
-      <label>Group IDs (um por linha ou separados por vírgula)</label>
-      <textarea id="group_ids_txt">OTc3OTg4MjY2NTk0
-NzYzNTgyOTcyNjY0</textarea>
-      <label>Mensagem de texto</label>
-      <textarea id="text_msg_grp" placeholder="Digite a mensagem a ser enviada para os grupos"></textarea>
-      <button class="btn" onclick="enviarTextoGrp()">Enviar texto (Grupos)</button>
-    </fieldset>
-
-    <h3>Resposta</h3>
-    <pre id="out3" class="msg"></pre>
-  </div>
-
-<script>
-function selTab(which) {{
-  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
-  const map = {{'ind':0, 'grp':1, 'redir':2, 'txt':3}};
-  document.querySelectorAll('.tab')[map[which]].classList.add('active');
-  document.getElementById('panel-' + which).classList.add('active');
-}}
-function parseList(txt) {{
-  return txt.split(/[\\n,]/).map(s => s.trim()).filter(Boolean);
-}}
-function buildButtons(prefix) {{
-  const bts = [];
-  const b1t = document.getElementById('b1_text'+prefix).value.trim();
-  const b1a = document.getElementById('b1_action'+prefix).value.trim();
-  const b2t = document.getElementById('b2_text'+prefix).value.trim();
-  const b2a = document.getElementById('b2_action'+prefix).value.trim();
-  const b3t = document.getElementById('b3_text'+prefix).value.trim();
-  const b3a = document.getElementById('b3_action'+prefix).value.trim();
-  if (b1t && b1a) bts.push({{ text:b1t, action:b1a }});
-  if (b2t && b2a) bts.push({{ text:b2t, action:b2a }});
-  if (b3t && b3a) bts.push({{ text:b3t, action:b3a }});
-  return bts;
-}}
-function buildRedirects() {{
-  const out = [];
-  const t1 = document.getElementById('br1_text').value.trim();
-  const u1 = document.getElementById('br1_url').value.trim();
-  const t2 = document.getElementById('br2_text').value.trim();
-  const u2 = document.getElementById('br2_url').value.trim();
-  const t3 = document.getElementById('br3_text').value.trim();
-  const u3 = document.getElementById('br3_url').value.trim();
-  if (t1 && u1) out.push({{ text:t1, url:u1 }});
-  if (t2 && u2) out.push({{ text:t2, url:u2 }});
-  if (t3 && u3) out.push({{ text:t3, url:u3 }});
-  return out;
-}}
-async function enviarInd() {{
-  const adm = document.getElementById('adm').value.trim();
-  const emails = parseList(document.getElementById('emails').value);
-  const title  = document.getElementById('title1').value.trim();
-  const desc   = document.getElementById('desc1').value.trim();
-  const buttons= buildButtons('1');
-  const res = await fetch('/api/send-interactive', {{
-    method:'POST',
-    headers: {{ 'Content-Type':'application/json', 'X-Admin-Token': adm }},
-    body: JSON.stringify({{ emails, title, desc, buttons }})
-  }});
-  document.getElementById('out1').textContent = await res.text();
-}}
-async function enviarGrp() {{
-  const adm = document.getElementById('adm').value.trim();
-  const group_ids = parseList(document.getElementById('group_ids').value);
-  const title  = document.getElementById('title2').value.trim();
-  const desc   = document.getElementById('desc2').value.trim();
-  const buttons= buildButtons('2');
-  const res = await fetch('/api/send-group-interactive', {{
-    method:'POST',
-    headers: {{ 'Content-Type':'application/json', 'X-Admin-Token': adm }},
-    body: JSON.stringify({{ group_ids, title, desc, buttons }})
-  }});
-  document.getElementById('out2').textContent = await res.text();
-}}
-async function enviarGrpRedirect() {{
-  const adm = document.getElementById('adm').value.trim();
-  const group_ids = parseList(document.getElementById('group_ids_redir').value);
-  const title  = document.getElementById('titleR').value.trim();
-  const desc   = document.getElementById('descR').value.trim();
-  const redirects = buildRedirects();
-  const res = await fetch('/api/send-group-redirect', {{
-    method:'POST',
-    headers: {{ 'Content-Type':'application/json', 'X-Admin-Token': adm }},
-    body: JSON.stringify({{ group_ids, title, desc, redirects }})
-  }});
-  document.getElementById('outR').textContent = await res.text();
-}}
-async function enviarTextoInd() {{
-  const adm = document.getElementById('adm').value.trim();
-  const emails = parseList(document.getElementById('emails_txt').value);
-  const text   = document.getElementById('text_msg_ind').value.trim();
-  const res = await fetch('/api/send-text', {{
-    method:'POST',
-    headers: {{ 'Content-Type':'application/json', 'X-Admin-Token': adm }},
-    body: JSON.stringify({{ emails, text }})
-  }});
-  document.getElementById('out3').textContent = await res.text();
-}}
-async function enviarTextoGrp() {{
-  const adm = document.getElementById('adm').value.trim();
-  const group_ids = parseList(document.getElementById('group_ids_txt').value);
-  const text      = document.getElementById('text_msg_grp').value.trim();
-  const res = await fetch('/api/send-group-text', {{
-    method:'POST',
-    headers: {{ 'Content-Type':'application/json', 'X-Admin-Token': adm }},
-    body: JSON.stringify({{ group_ids, text }})
-  }});
-  document.getElementById('out3').textContent = await res.text();
-}}
-</script>
-</body>
-</html>
-    """
-    return html, 200, {"Content-Type": "text/html; charset=utf-8"}
-
-# ========= Auth da UI =========
-def _check_ui_auth():
-    if not UI_ADMIN_TOKEN:
-        return None  # sem proteção
-    provided = request.headers.get("X-Admin-Token", "")
-    if provided != UI_ADMIN_TOKEN:
-        return jsonify({"error":"unauthorized"}), 403
-    return None
-
 @app.get("/ui")
 def ui_send():
     preset_groups = "OTc3OTg4MjY2NTk0\nNzYzNTgyOTcyNjY0"
@@ -599,8 +307,8 @@ def ui_send():
     .notice code {{ background: rgba(255,255,255,.12); padding:2px 6px; border-radius:6px; color:#fff; }}
     .counter {{ font-size:12px; margin-top:6px; }}
     .counter.limit-ok {{ color:#666; }}
-    .counter.limit-warn {{ color:#b45309; }} /* âmbar */
-    .counter.limit-bad {{ color:#b91c1c; }}  /* vermelho */
+    .counter.limit-warn {{ color:#b45309; }}
+    .counter.limit-bad {{ color:#b91c1c; }}
   </style>
 </head>
 <body>
@@ -785,17 +493,17 @@ NzYzNTgyOTcyNjY0</textarea>
   </div>
 
 <script>
-function selTab(which) {{
+function selTab(which) {
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
-  const map = {{'ind':0, 'grp':1, 'redir':2, 'txt':3}};
+  const map = {'ind':0, 'grp':1, 'redir':2, 'txt':3};
   document.querySelectorAll('.tab')[map[which]].classList.add('active');
   document.getElementById('panel-' + which).classList.add('active');
-}}
-function parseList(txt) {{
+}
+function parseList(txt) {
   return txt.split(/[\\n,]/).map(s => s.trim()).filter(Boolean);
-}}
-function buildButtons(prefix) {{
+}
+function buildButtons(prefix) {
   const bts = [];
   const b1t = document.getElementById('b1_text'+prefix).value.trim();
   const b1a = document.getElementById('b1_action'+prefix).value.trim();
@@ -803,12 +511,12 @@ function buildButtons(prefix) {{
   const b2a = document.getElementById('b2_action'+prefix).value.trim();
   const b3t = document.getElementById('b3_text'+prefix).value.trim();
   const b3a = document.getElementById('b3_action'+prefix).value.trim();
-  if (b1t && b1a) bts.push({{ text:b1t, action:b1a }});
-  if (b2t && b2a) bts.push({{ text:b2t, action:b2a }});
-  if (b3t && b3a) bts.push({{ text:b3t, action:b3a }});
+  if (b1t && b1a) bts.push({ text:b1t, action:b1a });
+  if (b2t && b2a) bts.push({ text:b2t, action:b2a });
+  if (b3t && b3a) bts.push({ text:b3t, action:b3a });
   return bts;
-}}
-function buildRedirects() {{
+}
+function buildRedirects() {
   const out = [];
   const t1 = document.getElementById('br1_text').value.trim();
   const u1 = document.getElementById('br1_url').value.trim();
@@ -816,95 +524,103 @@ function buildRedirects() {{
   const u2 = document.getElementById('br2_url').value.trim();
   const t3 = document.getElementById('br3_text').value.trim();
   const u3 = document.getElementById('br3_url').value.trim();
-  if (t1 && u1) out.push({{ text:t1, url:u1 }});
-  if (t2 && u2) out.push({{ text:t2, url:u2 }});
-  if (t3 && u3) out.push({{ text:t3, url:u3 }});
+  if (t1 && u1) out.push({ text:t1, url:u1 });
+  if (t2 && u2) out.push({ text:t2, url:u2 });
+  if (t3 && u3) out.push({ text:t3, url:u3 });
   return out;
-}}
-function updateCount(id, limit) {{
+}
+function updateCount(id, limit) {
   const el = document.getElementById(id);
   const cnt = document.getElementById(id + '_count');
   const len = el.value.length;
   cnt.textContent = len + ' / ' + limit;
   cnt.classList.remove('limit-ok','limit-warn','limit-bad');
-  if (len <= limit) {{
+  if (len <= limit) {
     cnt.classList.add(len > limit*0.85 ? 'limit-warn' : 'limit-ok');
-  }} else {{
+  } else {
     cnt.classList.add('limit-bad');
-  }}
-}}
-async function enviarInd() {{
+  }
+}
+async function enviarInd() {
   const adm = document.getElementById('adm').value.trim();
   const emails = parseList(document.getElementById('emails').value);
   const title  = document.getElementById('title1').value.trim();
   const desc   = document.getElementById('desc1').value.trim();
-  if (desc.length > 500) {{ alert('A descrição do card excede 500 caracteres.'); return; }}
+  if (desc.length > 500) { alert('A descrição do card excede 500 caracteres.'); return; }
   const buttons= buildButtons('1');
-  const res = await fetch('/api/send-interactive', {{
+  const res = await fetch('/api/send-interactive', {
     method:'POST',
-    headers: {{ 'Content-Type':'application/json', 'X-Admin-Token': adm }},
-    body: JSON.stringify({{ emails, title, desc, buttons }})
-  }});
+    headers: { 'Content-Type':'application/json', 'X-Admin-Token': adm },
+    body: JSON.stringify({ emails, title, desc, buttons })
+  });
   document.getElementById('out1').textContent = await res.text();
-}}
-async function enviarGrp() {{
+}
+async function enviarGrp() {
   const adm = document.getElementById('adm').value.trim();
   const group_ids = parseList(document.getElementById('group_ids').value);
   const title  = document.getElementById('title2').value.trim();
   const desc   = document.getElementById('desc2').value.trim();
-  if (desc.length > 500) {{ alert('A descrição do card excede 500 caracteres.'); return; }}
+  if (desc.length > 500) { alert('A descrição do card excede 500 caracteres.'); return; }
   const buttons= buildButtons('2');
-  const res = await fetch('/api/send-group-interactive', {{
+  const res = await fetch('/api/send-group-interactive', {
     method:'POST',
-    headers: {{ 'Content-Type':'application/json', 'X-Admin-Token': adm }},
-    body: JSON.stringify({{ group_ids, title, desc, buttons }})
-  }});
+    headers: { 'Content-Type':'application/json', 'X-Admin-Token': adm },
+    body: JSON.stringify({ group_ids, title, desc, buttons })
+  });
   document.getElementById('out2').textContent = await res.text();
-}}
-async function enviarGrpRedirect() {{
+}
+async function enviarGrpRedirect() {
   const adm = document.getElementById('adm').value.trim();
   const group_ids = parseList(document.getElementById('group_ids_redir').value);
   const title  = document.getElementById('titleR').value.trim();
   const desc   = document.getElementById('descR').value.trim();
-  if (desc.length > 500) {{ alert('A descrição do card excede 500 caracteres.'); return; }}
+  if (desc.length > 500) { alert('A descrição do card excede 500 caracteres.'); return; }
   const redirects = buildRedirects();
-  const res = await fetch('/api/send-group-redirect', {{
+  const res = await fetch('/api/send-group-redirect', {
     method:'POST',
-    headers: {{ 'Content-Type':'application/json', 'X-Admin-Token': adm }},
-    body: JSON.stringify({{ group_ids, title, desc, redirects }})
-  }});
+    headers: { 'Content-Type':'application/json', 'X-Admin-Token': adm },
+    body: JSON.stringify({ group_ids, title, desc, redirects })
+  });
   document.getElementById('outR').textContent = await res.text();
-}}
-async function enviarTextoInd() {{
+}
+async function enviarTextoInd() {
   const adm = document.getElementById('adm').value.trim();
   const emails = parseList(document.getElementById('emails_txt').value);
   const text   = document.getElementById('text_msg_ind').value.trim();
-  if (text.length > 4096) {{ alert('A mensagem de texto excede 4096 caracteres.'); return; }}
-  const res = await fetch('/api/send-text', {{
+  if (text.length > 4096) { alert('A mensagem de texto excede 4096 caracteres.'); return; }
+  const res = await fetch('/api/send-text', {
     method:'POST',
-    headers: {{ 'Content-Type':'application/json', 'X-Admin-Token': adm }},
-    body: JSON.stringify({{ emails, text }})
-  }});
+    headers: { 'Content-Type':'application/json', 'X-Admin-Token': adm },
+    body: JSON.stringify({ emails, text })
+  });
   document.getElementById('out3').textContent = await res.text();
-}}
-async function enviarTextoGrp() {{
+}
+async function enviarTextoGrp() {
   const adm = document.getElementById('adm').value.trim();
   const group_ids = parseList(document.getElementById('group_ids_txt').value);
   const text      = document.getElementById('text_msg_grp').value.trim();
-  if (text.length > 4096) {{ alert('A mensagem de texto excede 4096 caracteres.'); return; }}
-  const res = await fetch('/api/send-group-text', {{
+  if (text.length > 4096) { alert('A mensagem de texto excede 4096 caracteres.'); return; }
+  const res = await fetch('/api/send-group-text', {
     method:'POST',
-    headers: {{ 'Content-Type':'application/json', 'X-Admin-Token': adm }},
-    body: JSON.stringify({{ group_ids, text }})
-  }});
+    headers: { 'Content-Type':'application/json', 'X-Admin-Token': adm },
+    body: JSON.stringify({ group_ids, text })
+  });
   document.getElementById('out3').textContent = await res.text();
-}}
+}
 </script>
 </body>
 </html>
     """
     return html, 200, {"Content-Type": "text/html; charset=utf-8"}
 
+# ========= Auth da UI =========
+def _check_ui_auth():
+    if not UI_ADMIN_TOKEN:
+        return None  # sem proteção
+    provided = request.headers.get("X-Admin-Token", "")
+    if provided != UI_ADMIN_TOKEN:
+        return jsonify({"error":"unauthorized"}), 403
+    return None
 
 # ========= APIs de envio =========
 @app.post("/api/send-interactive")
@@ -1107,4 +823,3 @@ def test_send_interactive_3():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "10000"))
     app.run(host="0.0.0.0", port=port)
-
