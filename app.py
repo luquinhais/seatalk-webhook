@@ -10,7 +10,7 @@ AUTH_URL        = "https://openapi.seatalk.io/auth/app_access_token"
 CONTACTS_URL    = "https://openapi.seatalk.io/contacts/v2/get_employee_code_with_email"
 SINGLE_DM_URL   = "https://openapi.seatalk.io/messaging/v2/single_chat"
 GROUP_DM_URL    = "https://openapi.seatalk.io/messaging/v2/group_chat"
-UPDATE_URL      = "https://openapi.seatalk.io/messaging/v2/update"
+UPDATE_URL      = "https://openapi.seatalk.io/messaging/v2/update"  # não será usado, mas mantido p/ referência
 
 # ========= Config (env) =========
 SEATALK_APP_ID         = (os.getenv("SEATALK_APP_ID") or "").strip()
@@ -168,6 +168,7 @@ def build_redirect_elements(title: str, desc: str, redirects: list) -> list:
         })
     return els
 
+# (mantido para referência, não usado neste fluxo)
 def update_card(message_id: str, elements: list):
     token = get_token()
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
@@ -270,7 +271,7 @@ def seatalk_callback():
         evt        = data.get("event") or {}
         message_id = str(evt.get("message_id", ""))
         value      = evt.get("value")
-        action     = _extract_action(value)
+        action     = _extract_action(value)  # apenas para log
         meta       = _extract_sheet_meta(value)  # sheet_id/sheet_name enviados no botão
         email_or_id= str(evt.get("email") or evt.get("seatalk_id") or "")
         group_id   = str(evt.get("group_id") or evt.get("chat_id") or "")
@@ -285,33 +286,21 @@ def seatalk_callback():
         except Exception as e:
             print("sheets log error:", repr(e))
 
-        # 1) Atualiza o card: remove botões e mantém apenas a mensagem final
-        if message_id:
-            try:
-                elements = [
-                    {"element_type": "description",
-                     "description": {"text": f"Resposta registrada ✅ ({action})", "format": 1}}
-                ]
-                body = update_card(message_id, elements)
-                print("updated card:", body)
-            except Exception as e:
-                print("update error:", repr(e))
-
-        # 2) Envia mensagem de texto simples de agradecimento
+        # NÃO atualiza o card. Apenas envia a mensagem "Resposta enviada".
         try:
             token = get_token()
-            thank_msg = f"Obrigado por responder ✅ ({action})"
+            thank_msg = "Resposta enviada"
             if group_id:
-                # em mensagens enviadas para grupo, agradece no grupo
+                # se clique veio de grupo, responde no grupo
                 send_text_to_group(token, group_id, thank_msg)
             elif email_or_id and "@" in email_or_id:
-                # em DM, agradece diretamente ao usuário
+                # se clique veio de DM, responde ao usuário
                 emp_code = resolve_employee_code(token, email_or_id)
                 send_text_to_employee(token, emp_code, thank_msg)
             else:
                 print("no direct target to thank (missing group_id/email)")
         except Exception as e:
-            print("send thank you text error:", repr(e))
+            print("send thank text error:", repr(e))
 
         return "ok", 200
 
@@ -382,7 +371,7 @@ def ui_send():
     </div>
   </div>
 
-  <p class="muted">Cards (callback/redirect) e texto simples. Cliques de callback chegam em <code>/callback</code>, atualizam o card e são logados no Sheets.</p>
+  <p class="muted">Cards (callback/redirect) e texto simples. Cliques de callback chegam em <code>/callback</code> e são logados no Sheets. O card não é atualizado; apenas é enviada a mensagem "Resposta enviada".</p>
 
   <fieldset>
     <legend>Autorização da UI (opcional)</legend>
@@ -895,8 +884,8 @@ def _start_keepalive_thread():
     Mantém pings periódicos na própria URL pública para reduzir hibernação.
     Configure:
       KEEPALIVE_URL=https://seu-servico.onrender.com/
-      KEEPALIVE_INTERVAL_SEC=300   (5 min, por exemplo)
-    Observação: em planos gratuitos o Render ainda pode hibernar; use pinger externo para 100% uptime.
+      KEEPALIVE_INTERVAL_SEC=300
+    Observação: em planos gratuitos o Render ainda pode hibernar.
     """
     url = (os.getenv("KEEPALIVE_URL") or "").strip()
     try:
