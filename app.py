@@ -1,5 +1,5 @@
 # app.py
-import os, time, json, hashlib, requests, re
+import os, time, json, hashlib, requests, re, threading
 from datetime import datetime, timezone
 from flask import Flask, request, jsonify
 
@@ -285,17 +285,33 @@ def seatalk_callback():
         except Exception as e:
             print("sheets log error:", repr(e))
 
-        # Atualiza o card
+        # 1) Atualiza o card: remove botões e mantém apenas a mensagem final
         if message_id:
             try:
                 elements = [
                     {"element_type": "description",
-                     "description": {"text": f"Obrigado por responder ✅ ({action})", "format": 1}}
+                     "description": {"text": f"Resposta registrada ✅ ({action})", "format": 1}}
                 ]
                 body = update_card(message_id, elements)
-                print("updated:", body)
+                print("updated card:", body)
             except Exception as e:
                 print("update error:", repr(e))
+
+        # 2) Envia mensagem de texto simples de agradecimento
+        try:
+            token = get_token()
+            thank_msg = f"Obrigado por responder ✅ ({action})"
+            if group_id:
+                # em mensagens enviadas para grupo, agradece no grupo
+                send_text_to_group(token, group_id, thank_msg)
+            elif email_or_id and "@" in email_or_id:
+                # em DM, agradece diretamente ao usuário
+                emp_code = resolve_employee_code(token, email_or_id)
+                send_text_to_employee(token, emp_code, thank_msg)
+            else:
+                print("no direct target to thank (missing group_id/email)")
+        except Exception as e:
+            print("send thank you text error:", repr(e))
 
         return "ok", 200
 
@@ -873,6 +889,36 @@ def test_send_interactive_3():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+# ========= Keep-alive opcional =========
+def _start_keepalive_thread():
+    """
+    Mantém pings periódicos na própria URL pública para reduzir hibernação.
+    Configure:
+      KEEPALIVE_URL=https://seu-servico.onrender.com/
+      KEEPALIVE_INTERVAL_SEC=300   (5 min, por exemplo)
+    Observação: em planos gratuitos o Render ainda pode hibernar; use pinger externo para 100% uptime.
+    """
+    url = (os.getenv("KEEPALIVE_URL") or "").strip()
+    try:
+        period = int(os.getenv("KEEPALIVE_INTERVAL_SEC") or "0")
+    except Exception:
+        period = 0
+    if not url or period <= 0:
+        print("keepalive disabled")
+        return
+    def _worker():
+        while True:
+            try:
+                requests.get(url, timeout=10)
+                print("keepalive ping ok ->", url)
+            except Exception as e:
+                print("keepalive ping error:", repr(e))
+            time.sleep(period)
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    print(f"keepalive enabled: {url} every {period}s")
+
 if __name__ == "__main__":
+    _start_keepalive_thread()
     port = int(os.environ.get("PORT", "10000"))
     app.run(host="0.0.0.0", port=port)
